@@ -123,6 +123,7 @@ static int insnSize(uint8_t op) {
         case OP_BIT_AND: case OP_BIT_OR: case OP_BIT_XOR: case OP_BIT_NOT:
         case OP_SHL: case OP_SHR:
         case OP_NOT: case OP_RET: case OP_PRINT: case OP_PRINTLN: case OP_HALT:
+        case OP_NEW_TABLE: case OP_TABLE_GET: case OP_TABLE_SET: case OP_TYPE:
             return 1;
         case OP_CONSTANT: case OP_LOAD: case OP_STORE: case OP_CALL: case OP_NEW_TUPLE:
             return 2;
@@ -182,6 +183,10 @@ static const char* opcodeMnemonic(uint8_t op) {
         case OP_CALL:           return "call";
         case OP_RET:            return "ret";
         case OP_NEW_TUPLE:      return "new_tuple";
+        case OP_NEW_TABLE:      return "new_table";
+        case OP_TABLE_GET:      return "table_get";
+        case OP_TABLE_SET:      return "table_set";
+        case OP_TYPE:           return "type";
         case OP_PRINT:          return "print";
         case OP_PRINTLN:        return "println";
         case OP_HALT:           return "halt";
@@ -228,6 +233,8 @@ static int lookupMnemonic(const std::string& name) {
         {"jmp", OP_JMP}, {"jz", OP_JZ}, {"jnz", OP_JNZ}, {"loop", OP_LOOP},
         {"call", OP_CALL}, {"ret", OP_RET},
         {"new_tuple", OP_NEW_TUPLE},
+        {"new_table", OP_NEW_TABLE}, {"table_get", OP_TABLE_GET},
+        {"table_set", OP_TABLE_SET}, {"type", OP_TYPE},
         {"print", OP_PRINT}, {"println", OP_PRINTLN}, {"halt", OP_HALT},
     };
     for (auto& entry : table) {

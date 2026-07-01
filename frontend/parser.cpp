@@ -102,38 +102,55 @@ Stmt* Parser::statement() {
     if (match(TokenType::TK_REPEAT)) return repeatStmt();
     if (match(TokenType::TK_RETURN)) return returnStmt();
     if (match(TokenType::TK_SEMI))  return nullptr;
-    // Expression statement (function call or assignment)
-    Expr* e = expression();
-    if (e && e->type == ExprType::CALL) {
-        return Stmt::makeCallStmt(e->line, e);
-    }
-    // Assignment
-    if (e && e->type == ExprType::NAME && current.type == TokenType::TK_ASSIGN) {
-        const char* name = strdup(e->strVal);
-        Expr::destroy(e);
-        advance(); // consume =
-        Expr* val = expression();
-        return Stmt::makeAssign(name ? previous.line : 0, name, val);
-    }
-    // Function definition: function name(params) body end
-    // Handled differently - it's a statement
-    // Actually 'function' keyword is handled above via match, but we need to handle
-    // function name(...) as a statement. Let me add a case.
-    // Actually, it's handled as prefixExpr → funcDef. But 'function' keyword at statement
-    // level with a name after it is a statement:
-    //   function f(x) body end
-    // This is syntactic sugar for:
-    //   f = function(x) body end
-    // Let me handle it here:
-    if (check(TokenType::TK_FUNCTION)) {
-        // Actually we should parse function name(...) body end
-        // This requires lookahead. Let me handle this in a special way.
-        // For now, consume and report.
-        fprintf(stderr, "[line %d] error: function statement not handled yet\n", current.line);
+
+    // function name(params) body end  →  name = function(params) body end
+    if (match(TokenType::TK_FUNCTION)) {
+        if (current.type == TokenType::TK_NAME) {
+            const char* name = copyStr(current.start);
+            int line = current.line;
+            advance();
+            Expr* func = funcDef();
+            return Stmt::makeAssign(line, name, func);
+        }
+        fprintf(stderr, "[line %d] error: expected function name\n", current.line);
         hadError = true;
         return nullptr;
     }
-    // Otherwise it's an expression statement
+
+    // Expression or assignment
+    Expr* e = expression();
+
+    if (current.type == TokenType::TK_ASSIGN) {
+        int line = e ? e->line : 0;
+        if (e && e->type == ExprType::NAME) {
+            const char* name = strdup(e->strVal);
+            Expr::destroy(e);
+            advance();
+            Expr* val = expression();
+            return Stmt::makeAssign(line, name, val);
+        } else if (e && e->type == ExprType::INDEX) {
+            auto* idx = (IndexData*)e->data;
+            Expr* obj = idx->obj;
+            Expr* key = idx->key;
+            idx->obj = idx->key = nullptr;
+            Expr::destroy(e);
+            advance();
+            Expr* val = expression();
+            return Stmt::makeIndexAssign(line, obj, key, val);
+        } else {
+            fprintf(stderr, "[line %d] error: invalid assignment target\n", line);
+            hadError = true;
+            Expr::destroy(e);
+            advance();
+            Expr::destroy(expression());
+            return nullptr;
+        }
+    }
+
+    if (e && e->type == ExprType::CALL) {
+        return Stmt::makeCallStmt(e->line, e);
+    }
+
     if (e) {
         fprintf(stderr, "[line %d] error: expression has no effect\n", e->line);
         hadError = true;
@@ -320,15 +337,14 @@ Expr* Parser::powExpr() {
 
 Expr* Parser::unaryExpr() {
     if (match(TokenType::TK_MINUS) || match(TokenType::TK_NOT)) {
-        // TK_LEN is '#'
         TokenType op = previous.type;
         Expr* rhs = unaryExpr();
         return Expr::makeUnary(previous.line, op, rhs);
     }
-    return callExpr();
+    return postfixExpr();
 }
 
-Expr* Parser::callExpr() {
+Expr* Parser::postfixExpr() {
     Expr* e = prefixExpr();
     for (;;) {
         if (match(TokenType::TK_LPAREN)) {
@@ -340,6 +356,14 @@ Expr* Parser::callExpr() {
             }
             consume(TokenType::TK_RPAREN, "expected ')'");
             e = Expr::makeCall(previous.line, e, args);
+        } else if (match(TokenType::TK_LBRACK)) {
+            Expr* key = expression();
+            consume(TokenType::TK_RBRACK, "expected ']'");
+            e = Expr::makeIndex(previous.line, e, key);
+        } else if (match(TokenType::TK_DOT)) {
+            consume(TokenType::TK_NAME, "expected name after '.'");
+            Expr* key = Expr::makeStr(previous.line, copyStr(previous.start));
+            e = Expr::makeIndex(previous.line, e, key);
         } else {
             break;
         }
@@ -356,7 +380,10 @@ Expr* Parser::prefixExpr() {
         consume(TokenType::TK_RPAREN, "expected ')'");
         return e;
     }
-    // Function definition as expression: function(params) body end
+    // Table constructor: { fieldlist }
+    if (match(TokenType::TK_LBRACE)) {
+        return tableConstructor();
+    }
     return primaryExpr();
 }
 
@@ -379,6 +406,52 @@ Expr* Parser::primaryExpr() {
     fprintf(stderr, "[line %d] error: expected expression\n", current.line);
     hadError = true;
     throw ParseError();
+}
+
+Expr* Parser::tableConstructor() {
+    int line = previous.line;
+    std::vector<TableField> fields;
+
+    if (!check(TokenType::TK_RBRACE)) {
+        do {
+            if (check(TokenType::TK_RBRACE)) break;
+            TableField field = {nullptr, nullptr};
+
+            if (match(TokenType::TK_LBRACK)) {
+                field.key = expression();
+                consume(TokenType::TK_RBRACK, "expected ']'");
+                consume(TokenType::TK_ASSIGN, "expected '='");
+                field.value = expression();
+            } else if (check(TokenType::TK_NAME)) {
+                const char* name = copyStr(current.start);
+                int nameLine = current.line;
+                advance();
+                if (match(TokenType::TK_ASSIGN)) {
+                    field.key = Expr::makeStr(nameLine, name);
+                    field.value = expression();
+                } else {
+                    field.value = Expr::makeName(nameLine, name);
+                }
+            } else {
+                field.value = expression();
+            }
+
+            fields.push_back(field);
+        } while (match(TokenType::TK_COMMA));
+    }
+    consume(TokenType::TK_RBRACE, "expected '}'");
+
+    int implicitKey = 1;
+    for (auto& f : fields) {
+        if (f.key == nullptr) {
+            f.key = Expr::makeNum(line, implicitKey);
+            implicitKey++;
+        }
+    }
+
+    auto* arr = new TableField[fields.size()];
+    memcpy(arr, fields.data(), fields.size() * sizeof(TableField));
+    return Expr::makeTable(line, arr, (int)fields.size());
 }
 
 Expr* Parser::funcDef() {

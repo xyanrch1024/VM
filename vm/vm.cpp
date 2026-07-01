@@ -112,8 +112,14 @@ void VM::markObj(Obj* obj) {
     switch (obj->type) {
         case ObjType::STRING:
             break; // leaf
-        case ObjType::TABLE:
-            break; // TODO: trace entries when phase 4 starts
+        case ObjType::TABLE: {
+            auto* table = static_cast<ObjTable*>(obj);
+            for (auto& e : table->entries) {
+                markValue(e.key);
+                markValue(e.value);
+            }
+            break;
+        }
         case ObjType::CLOSURE: {
             auto* closure = static_cast<ObjClosure*>(obj);
             for (int i = 0; i < closure->upvalueCount; i++)
@@ -150,8 +156,11 @@ void VM::freeObj(Obj* obj) {
             s->~ObjString();
             break;
         }
-        case ObjType::TABLE:
-            break; // TODO: cleanup entries
+        case ObjType::TABLE: {
+            auto* t = static_cast<ObjTable*>(obj);
+            t->~ObjTable();
+            break;
+        }
         case ObjType::CLOSURE: {
             auto* c = static_cast<ObjClosure*>(obj);
             free(c->upvalues);
@@ -382,6 +391,58 @@ VM::Result VM::interpret(Function* func) {
 
             // === Objects ===
             case OP_NEW_TUPLE: { readByte(); push(Value::nil()); break; }
+            case OP_NEW_TABLE: {
+                auto* obj = gcAlloc(sizeof(ObjTable));
+                obj->type = ObjType::TABLE;
+                auto* table = static_cast<ObjTable*>(obj);
+                new (&table->entries) std::vector<ObjTable::Entry>();
+                push(Value::makeObj(table));
+                break;
+            }
+            case OP_TABLE_GET: {
+                Value key = pop();
+                Value tableVal = pop();
+                if (tableVal.type != ValueType::OBJ || tableVal.obj->type != ObjType::TABLE) {
+                    runtimeError("table_get: operand is not a table");
+                    break;
+                }
+                auto* table = static_cast<ObjTable*>(tableVal.obj);
+                push(table->get(key));
+                break;
+            }
+            case OP_TABLE_SET: {
+                Value value = pop();
+                Value key = pop();
+                Value tableVal = pop();
+                if (tableVal.type != ValueType::OBJ || tableVal.obj->type != ObjType::TABLE) {
+                    runtimeError("table_set: operand is not a table");
+                    break;
+                }
+                auto* table = static_cast<ObjTable*>(tableVal.obj);
+                table->set(key, value);
+                break;
+            }
+            case OP_TYPE: {
+                Value v = pop();
+                const char* typeName = "nil";
+                switch (v.type) {
+                    case ValueType::NIL:    typeName = "nil"; break;
+                    case ValueType::BOOL:   typeName = "boolean"; break;
+                    case ValueType::INT:
+                    case ValueType::FLOAT:  typeName = "number"; break;
+                    case ValueType::STRING: typeName = "string"; break;
+                    case ValueType::OBJ:
+                        switch (v.obj->type) {
+                            case ObjType::TABLE:   typeName = "table"; break;
+                            case ObjType::CLOSURE: typeName = "function"; break;
+                            case ObjType::UPVALUE: typeName = "upvalue"; break;
+                            case ObjType::STRING:  typeName = "string"; break;
+                        }
+                        break;
+                }
+                push(Value::makeStr(internString(typeName)));
+                break;
+            }
 
             // === I/O ===
             case OP_PRINT:   { peek().print(); break; }

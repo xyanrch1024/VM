@@ -236,6 +236,15 @@ void Compiler::compileStmt(Stmt* stmt) {
             break;
         }
 
+        case StmtType::INDEX_ASSIGN: {
+            auto d = (IndexAssignData*)stmt->data;
+            compileExpr(d->obj);
+            compileExpr(d->key);
+            compileExpr(d->value);
+            emitOpcode(stmt->line, OP_TABLE_SET);
+            break;
+        }
+
         case StmtType::CALL: {
             auto d = (CallStmtData*)stmt->data;
             compileExpr(d->call);
@@ -366,6 +375,15 @@ void Compiler::compileExpr(Expr* expr) {
                     emitOpcode(expr->line, OP_PRINTLN);
                     break;
                 }
+                if (strcmp(calleeName, "type") == 0) {
+                    if (d->args.size() != 1) {
+                        error(expr->line, "type() requires exactly one argument");
+                        break;
+                    }
+                    compileExpr(d->args[0]);
+                    emitOpcode(expr->line, OP_TYPE);
+                    break;
+                }
 
                 int slot = resolveLocal(calleeName);
                 if (slot < 0) {
@@ -378,7 +396,6 @@ void Compiler::compileExpr(Expr* expr) {
                     emitOpcode(expr->line, OP_LOAD);
                     emitByte((uint8_t)slot);
                 }
-                emitConstant(expr->line, Value::makeInt(0));
                 emitOpcode(expr->line, OP_CALL);
                 emitByte((uint8_t)d->args.size());
             } else {
@@ -387,14 +404,37 @@ void Compiler::compileExpr(Expr* expr) {
             break;
         }
 
+        case ExprType::TABLE: {
+            auto d = (TableData*)expr->data;
+            emitOpcode(expr->line, OP_NEW_TABLE);
+            for (int i = 0; i < d->count; i++) {
+                emitOpcode(expr->line, OP_DUP);
+                compileExpr(d->fields[i].key);
+                compileExpr(d->fields[i].value);
+                emitOpcode(expr->line, OP_TABLE_SET);
+            }
+            break;
+        }
+
+        case ExprType::INDEX: {
+            auto d = (IndexData*)expr->data;
+            compileExpr(d->obj);
+            compileExpr(d->key);
+            emitOpcode(expr->line, OP_TABLE_GET);
+            break;
+        }
+
         case ExprType::FUNCDEF: {
             auto d = (FuncDefData*)expr->data;
-            std::vector<const char*> params = d->params;
-            Function* func = enterFunction("anonymous", (int)params.size());
-            for (auto p : params) addLocal(p);
+            Function* func = enterFunction("anonymous", (int)d->params.size());
+            for (auto p : d->params) addLocal(p);
             if (d->body) compileBlock(d->body);
             leaveFunction();
-            emitOpcode(expr->line, OP_NIL);
+            int funcIdx = -1;
+            for (int i = 0; i < vm.functionCount(); i++) {
+                if (vm.getFunction(i) == func) { funcIdx = i; break; }
+            }
+            emitConstant(expr->line, Value::makeInt(funcIdx));
             break;
         }
     }
