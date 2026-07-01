@@ -24,6 +24,28 @@ struct ObjString : Obj {
 };
 
 struct ObjTable : Obj {
+    struct Entry { Value key; Value value; };
+    std::vector<Entry> entries;
+
+    Value get(Value key) {
+        for (auto& e : entries)
+            if (e.key.equals(key)) return e.value;
+        return Value::nil();
+    }
+
+    void set(Value key, Value value) {
+        if (value.type == ValueType::NIL) {
+            for (size_t i = 0; i < entries.size(); i++)
+                if (entries[i].key.equals(key))
+                    { entries.erase(entries.begin() + i); return; }
+            return;
+        }
+        for (auto& e : entries)
+            if (e.key.equals(key))
+                { e.value = value; return; }
+        entries.push_back({key, value});
+    }
+
     ObjTable() { type = ObjType::TABLE; }
 };
 

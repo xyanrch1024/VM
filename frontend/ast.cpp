@@ -59,6 +59,24 @@ Expr* Expr::makeCall(int line, Expr* callee, std::vector<Expr*> args) {
     return e;
 }
 
+Expr* Expr::makeTable(int line, TableField* fields, int count) {
+    auto e = (Expr*)calloc(1, sizeof(Expr));
+    e->type = ExprType::TABLE; e->line = line;
+    auto d = new TableData;
+    d->fields = fields; d->count = count;
+    e->data = d;
+    return e;
+}
+
+Expr* Expr::makeIndex(int line, Expr* obj, Expr* key) {
+    auto e = (Expr*)calloc(1, sizeof(Expr));
+    e->type = ExprType::INDEX; e->line = line;
+    auto d = new IndexData;
+    d->obj = obj; d->key = key;
+    e->data = d;
+    return e;
+}
+
 Expr* Expr::makeFuncDef(int line, std::vector<const char*> params, Stmt* body) {
     auto e = (Expr*)calloc(1, sizeof(Expr));
     e->type = ExprType::FUNCDEF; e->line = line;
@@ -89,6 +107,23 @@ void Expr::destroy(Expr* e) {
             auto d = (CallData*)e->data;
             destroy(d->callee);
             for (auto a : d->args) destroy(a);
+            delete d;
+            break;
+        }
+        case ExprType::TABLE: {
+            auto d = (TableData*)e->data;
+            for (int i = 0; i < d->count; i++) {
+                destroy(d->fields[i].key);
+                destroy(d->fields[i].value);
+            }
+            delete[] d->fields;
+            delete d;
+            break;
+        }
+        case ExprType::INDEX: {
+            auto d = (IndexData*)e->data;
+            destroy(d->obj);
+            destroy(d->key);
             delete d;
             break;
         }
@@ -129,6 +164,15 @@ Stmt* Stmt::makeAssign(int line, const char* name, Expr* value) {
     s->type = StmtType::ASSIGN; s->line = line;
     auto d = new AssignData;
     d->name = name; d->value = value;
+    s->data = d;
+    return s;
+}
+
+Stmt* Stmt::makeIndexAssign(int line, Expr* obj, Expr* key, Expr* value) {
+    auto s = (Stmt*)calloc(1, sizeof(Stmt));
+    s->type = StmtType::INDEX_ASSIGN; s->line = line;
+    auto d = new IndexAssignData;
+    d->obj = obj; d->key = key; d->value = value;
     s->data = d;
     return s;
 }
@@ -196,6 +240,13 @@ void Stmt::destroy(Stmt* s) {
             case StmtType::ASSIGN: {
                 auto d = (AssignData*)s->data;
                 ::free((void*)d->name);
+                Expr::destroy(d->value);
+                delete d; break;
+            }
+            case StmtType::INDEX_ASSIGN: {
+                auto d = (IndexAssignData*)s->data;
+                Expr::destroy(d->obj);
+                Expr::destroy(d->key);
                 Expr::destroy(d->value);
                 delete d; break;
             }

@@ -44,8 +44,9 @@ private:
     Expr* mulExpr();
     Expr* powExpr();
     Expr* unaryExpr();
-    Expr* callExpr();
+    Expr* postfixExpr();
     Expr* prefixExpr();
     Expr* primaryExpr();
+    Expr* tableConstructor();
     Expr* funcDef();
 };

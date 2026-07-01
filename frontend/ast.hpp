@@ -11,12 +11,17 @@ enum class ExprType : uint8_t {
     NAME,
     UNARY, BINARY,
     CALL,
+    TABLE,
+    INDEX,
     FUNCDEF,
 };
 
 struct UnaryData  { TokenType op; Expr* rhs; };
 struct BinaryData { TokenType op; Expr* lhs; Expr* rhs; };
 struct CallData   { Expr* callee; std::vector<Expr*> args; };
+struct TableField { Expr* key; Expr* value; };  // key=nullptr means implicit integer key
+struct TableData  { TableField* fields; int count; };
+struct IndexData  { Expr* obj; Expr* key; };
 struct FuncDefData { std::vector<const char*> params; Stmt* body; };
 
 struct Expr {
@@ -37,6 +42,8 @@ struct Expr {
     static Expr* makeUnary(int line, TokenType op, Expr* rhs);
     static Expr* makeBinary(int line, TokenType op, Expr* lhs, Expr* rhs);
     static Expr* makeCall(int line, Expr* callee, std::vector<Expr*> args);
+    static Expr* makeTable(int line, TableField* fields, int count);
+    static Expr* makeIndex(int line, Expr* obj, Expr* key);
     static Expr* makeFuncDef(int line, std::vector<const char*> params, Stmt* body);
 
     static void destroy(Expr* e);
@@ -46,6 +53,7 @@ enum class StmtType : uint8_t {
     BLOCK,
     LOCAL_DECL,
     ASSIGN,
+    INDEX_ASSIGN,
     IF, WHILE, REPEAT,
     CALL,
     RETURN,
@@ -54,6 +62,7 @@ enum class StmtType : uint8_t {
 struct BlockData   { std::vector<Stmt*> stmts; };
 struct LocalDeclData { std::vector<const char*> names; std::vector<Expr*> inits; };
 struct AssignData  { const char* name; Expr* value; };
+struct IndexAssignData { Expr* obj; Expr* key; Expr* value; };
 struct WhileData   { Expr* cond; Stmt* body; };
 struct RepeatData  { Stmt* body; Expr* cond; };
 struct CallStmtData { Expr* call; };
@@ -72,6 +81,7 @@ struct Stmt {
     static Stmt* makeBlock(int line, std::vector<Stmt*> stmts);
     static Stmt* makeLocalDecl(int line, std::vector<const char*> names, std::vector<Expr*> inits);
     static Stmt* makeAssign(int line, const char* name, Expr* value);
+    static Stmt* makeIndexAssign(int line, Expr* obj, Expr* key, Expr* value);
     static Stmt* makeWhile(int line, Expr* cond, Stmt* body);
     static Stmt* makeRepeat(int line, Stmt* body, Expr* cond);
     static Stmt* makeIf(int line, std::vector<Expr*> conds, std::vector<Stmt*> bodies, Stmt* elseBody);

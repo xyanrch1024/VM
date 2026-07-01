@@ -51,6 +51,12 @@ enum Opcode : uint8_t {
 
     // Objects
     OP_NEW_TUPLE,
+    OP_NEW_TABLE,
+    OP_TABLE_GET,
+    OP_TABLE_SET,
+
+    // Type
+    OP_TYPE,
 
     // I/O
     OP_PRINT,
