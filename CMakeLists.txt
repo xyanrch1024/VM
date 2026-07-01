@@ -6,16 +6,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(SOURCES
     main.cpp
-    chunk.cpp
-    debug.cpp
-    vm.cpp
-    ast.cpp
-    lexer.cpp
-    parser.cpp
-    compiler.cpp
+    vm/chunk.cpp
+    vm/debug.cpp
+    vm/vm.cpp
+    frontend/ast.cpp
+    frontend/lexer.cpp
+    frontend/parser.cpp
+    frontend/compiler.cpp
 )
 
 add_executable(vm ${SOURCES})
+
+target_include_directories(vm PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/vm
+    ${CMAKE_CURRENT_SOURCE_DIR}/frontend
+)
 
 target_compile_options(vm PRIVATE
     $<$<CONFIG:Debug>:-Wall -Wextra -g -O0>

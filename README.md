@@ -20,6 +20,11 @@ cmake --build build
 
 ## Architecture
 
+```
+vm/                  VM core (bytecodes, interpreter, value types)
+frontend/            Lexer, Parser, AST, Compiler
+```
+
 - **Lexer** — tokenizer for MiniLua syntax
 - **Parser** — recursive-descent parser → AST
 - **Compiler** — AST → bytecode for stack VM
