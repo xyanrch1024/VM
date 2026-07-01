@@ -3,9 +3,18 @@
 #include <cstdio>
 #include <cstdarg>
 #include <cmath>
+#include <cstdlib>
 
 VM::VM() { resetStack(); }
-VM::~VM() {}
+VM::~VM() {
+    // Free all GC-managed objects
+    Obj* obj = gcHead;
+    while (obj) {
+        Obj* next = obj->next;
+        freeObj(obj);
+        obj = next;
+    }
+}
 
 Function* VM::newFunction(const std::string& name, int arity) {
     auto func = std::make_unique<Function>();
@@ -55,6 +64,106 @@ void VM::dumpStack() const {
     }
     printf("\n");
 }
+
+// ============================================================
+// GC
+// ============================================================
+
+Obj* VM::gcAlloc(size_t size) {
+    gcCount++;
+    if (gcCount >= GC_THRESHOLD) {
+        collect();
+        gcCount = 0;
+    }
+
+    Obj* obj = (Obj*)malloc(size);
+    obj->type = ObjType::STRING; // caller must override
+    obj->marked = false;
+    obj->next = gcHead;
+    gcHead = obj;
+    return obj;
+}
+
+void VM::collect() {
+    markRoots();
+    sweep();
+}
+
+void VM::markRoots() {
+    // Stack values
+    for (auto& v : stack)
+        markValue(v);
+
+    // Function constant pools
+    for (auto& fn : functions)
+        for (auto& c : fn->chunk.constants)
+            markValue(c);
+}
+
+void VM::markValue(Value& v) {
+    if (v.type == ValueType::OBJ)
+        markObj(v.obj);
+}
+
+void VM::markObj(Obj* obj) {
+    if (!obj || obj->marked) return;
+    obj->marked = true;
+
+    switch (obj->type) {
+        case ObjType::STRING:
+            break; // leaf
+        case ObjType::TABLE:
+            break; // TODO: trace entries when phase 4 starts
+        case ObjType::CLOSURE: {
+            auto* closure = static_cast<ObjClosure*>(obj);
+            for (int i = 0; i < closure->upvalueCount; i++)
+                markObj(closure->upvalues[i]);
+            break;
+        }
+        case ObjType::UPVALUE: {
+            auto* upvalue = static_cast<ObjUpvalue*>(obj);
+            if (upvalue->location == nullptr) // closed
+                markValue(upvalue->closedValue);
+            break;
+        }
+    }
+}
+
+void VM::sweep() {
+    Obj** prev = &gcHead;
+    while (*prev) {
+        Obj* obj = *prev;
+        if (obj->marked) {
+            obj->marked = false; // reset for next cycle
+            prev = &obj->next;
+        } else {
+            *prev = obj->next;
+            freeObj(obj);
+        }
+    }
+}
+
+void VM::freeObj(Obj* obj) {
+    switch (obj->type) {
+        case ObjType::STRING: {
+            auto* s = static_cast<ObjString*>(obj);
+            s->~ObjString();
+            break;
+        }
+        case ObjType::TABLE:
+            break; // TODO: cleanup entries
+        case ObjType::CLOSURE: {
+            auto* c = static_cast<ObjClosure*>(obj);
+            free(c->upvalues);
+            break;
+        }
+        case ObjType::UPVALUE:
+            break;
+    }
+    free(obj);
+}
+
+// ============================================================
 
 void VM::runtimeError(const char* format, ...) {
     va_list args;

@@ -1,5 +1,6 @@
 #pragma once
 #include "chunk.hpp"
+#include "obj.hpp"
 #include <vector>
 #include <string>
 #include <unordered_map>
@@ -31,6 +32,9 @@ public:
     std::string* internString(const std::string& s);
     std::string* concatStrings(const std::string& a, const std::string& b);
 
+    // GC
+    Obj* gcAlloc(size_t size);
+
     // Debug
     void dumpStack() const;
 
@@ -47,6 +51,18 @@ private:
     // String table (stable pointers)
     std::vector<std::unique_ptr<std::string>> stringTable;
     std::unordered_map<std::string_view, std::string*> stringMap;
+
+    // GC
+    static const int GC_THRESHOLD = 10000;
+    Obj* gcHead = nullptr;
+    int gcCount = 0;
+
+    void collect();
+    void markRoots();
+    void markValue(Value& v);
+    void markObj(Obj* obj);
+    void sweep();
+    void freeObj(Obj* obj);
 
     // Current execution context
     CallFrame* frame() { return &frames.back(); }

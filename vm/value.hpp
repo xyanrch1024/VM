@@ -3,12 +3,15 @@
 #include <iostream>
 #include <string>
 
+struct Obj;  // forward decl for GC-managed objects
+
 enum class ValueType : uint8_t {
     NIL,
     BOOL,
     INT,
     FLOAT,
     STRING,
+    OBJ,    // GC-managed object (Obj*)
 };
 
 struct Value {
@@ -17,7 +20,8 @@ struct Value {
         int64_t integer;
         double floating;
         bool boolean;
-        void* ptr;
+        void* ptr;      // STRING: std::string* (RAII-managed)
+        Obj* obj;       // OBJ: GC-managed Obj*
     };
 
     static Value nil()   { return {ValueType::NIL,   {.integer = 0}}; }
@@ -25,6 +29,9 @@ struct Value {
     static Value makeInt(int64_t v)  { return {ValueType::INT,   {.integer = v}}; }
     static Value makeFloat(double v) { return {ValueType::FLOAT, {.floating = v}}; }
     static Value makeStr(void* p)   { return {ValueType::STRING, {.ptr = p}}; }
+    static Value makeObj(Obj* o)   { return {ValueType::OBJ,    {.obj = o}}; }
+
+    bool isObj() const { return type == ValueType::OBJ; }
 
     bool isTruthy() const {
         switch (type) {
@@ -33,6 +40,7 @@ struct Value {
             case ValueType::INT:    return integer != 0;
             case ValueType::FLOAT:  return floating != 0.0;
             case ValueType::STRING: return !static_cast<std::string*>(ptr)->empty();
+            case ValueType::OBJ:    return true;
         }
         return true;
     }
@@ -44,6 +52,7 @@ struct Value {
             case ValueType::INT:    out << integer; break;
             case ValueType::FLOAT:  out << floating; break;
             case ValueType::STRING: out << *static_cast<std::string*>(ptr); break;
+            case ValueType::OBJ:    out << "<object>"; break;
         }
     }
 
@@ -55,6 +64,7 @@ struct Value {
             case ValueType::INT:   return integer == other.integer;
             case ValueType::FLOAT: return floating == other.floating;
             case ValueType::STRING: return ptr == other.ptr;
+            case ValueType::OBJ:   return obj == other.obj;
         }
         return false;
     }
