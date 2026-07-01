@@ -8,6 +8,7 @@ set(SOURCES
     main.cpp
     vm/chunk.cpp
     vm/debug.cpp
+    vm/mbs.cpp
     vm/vm.cpp
     frontend/ast.cpp
     frontend/lexer.cpp

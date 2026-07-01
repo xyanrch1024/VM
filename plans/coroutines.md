@@ -16,7 +16,7 @@ This plan builds on the closure infrastructure (Phase 3). Coroutines are first-c
 enum class ValueType : uint8_t {
     NIL, BOOL, INT, FLOAT, STRING,
     CLOSURE,
-    COROUTINE,        // new
+    COROUTINE,        // new (add after CLOSURE)
 };
 ```
 
@@ -32,7 +32,7 @@ SUSPENDED  →  RUNNING  →  SUSPENDED
 | State | Meaning |
 |-------|---------|
 | `SUSPENDED` | Initial state after creation; can be resumed |
-| `RUNNING` | Currently executing (its own `run()` loop is active) |
+| `RUNNING` | Currently executing |
 | `DEAD` | Function returned normally or threw an error |
 
 ### 2.3 Coroutine Object
@@ -46,518 +46,614 @@ enum class CoroutineState : uint8_t {
 
 struct Coroutine {
     Closure* closure;                  // the function to execute
-    CoroutineState state;
+    CoroutineState state = CoroutineState::SUSPENDED;
     std::vector<Value> stack;          // private stack
     std::vector<CallFrame> frames;     // private call frames
-    // Current execution position:
-    int baseFramePc = 0;               // PC where this coroutine is paused
-    
-    // For resumption:
-    Value resumeArg;                   // value passed by resume() as yield() return
+    Coroutine* resumer = nullptr;      // who to switch back to on yield (nullptr = main)
 };
 ```
 
-**Key design decision**: Each coroutine gets its own stack and frame set. This is the simplest correct approach. When a coroutine yields, its entire stack is preserved. When resumed, it continues executing on its saved stack. The main VM's stack/frames remain untouched while a coroutine runs.
+**Key design decision**: Each coroutine gets its own stack and frame set. This is the simplest correct approach. When a coroutine yields, its entire stack is preserved. When resumed, it continues executing on its saved stack. The resumer's stack/frames remain untouched while a coroutine runs.
 
 ### 2.4 API Surface
 
 ```lua
--- Create coroutine
 local co = coroutine.create(function()
-  print("hello from coroutine")
   coroutine.yield(42)
-  print("resumed!")
   return "done"
 end)
 
--- Returns: status, result1, result2, ...
-local ok, val = coroutine.resume(co)
-print(val)  -- 42
-
-local ok, val2 = coroutine.resume(co)
-print(val2)  -- "done"
-
-print(coroutine.status(co))  -- "dead"
+local ok, val = coroutine.resume(co)     -- (true, 42)
+local ok, val2 = coroutine.resume(co)    -- (true, "done")
+print(coroutine.status(co))              -- "dead"
 ```
 
 ### 2.5 Built-in Functions
 
 | Function | Type | Description |
 |----------|------|-------------|
-| `coroutine.create(f)` | Builtin closure | Creates a coroutine from function `f` |
-| `coroutine.resume(co, ...)` | Builtin closure | Resumes coroutine `co`; returns (ok, values...) |
-| `coroutine.yield(...)` | Builtin closure | Suspends current coroutine; returns values to `resume` caller |
-| `coroutine.status(co)` | Builtin closure | Returns "suspended", "running", or "dead" |
+| `coroutine.create(f)` | Compiler intrinsic | Emits `OP_CREATE_COROUTINE` |
+| `coroutine.resume(co, ...)` | Compiler intrinsic | Emits `OP_RESUME` |
+| `coroutine.yield(...)` | Compiler intrinsic | Emits `OP_YIELD` |
+| `coroutine.status(co)` | Compiler intrinsic | Emits `OP_COROUTINE_STATUS` |
+
+All four are handled as compiler intrinsics (like `print`), not real function calls. The compiler recognizes `coroutine.create` / `coroutine.resume` / `coroutine.yield` / `coroutine.status` in `compileExpr(CALL)` and emits the corresponding opcodes directly.
 
 ---
 
-## 3. Implementation Strategy
+## 3. VM Changes
 
-### 3.1 State Machine
+### 3.1 CallFrame Extension
 
-The VM's execution loop is a state machine. Coroutines are implemented by swapping the active stack/frames:
-
-```
-Main VM:    [instructions...] → OP_RESUME → [coroutine runs] → OP_YIELD → back to main
-```
-
-When executing inside a coroutine:
-- VM uses the coroutine's `stack` and `frames` vectors instead of its own
-- `OP_YIELD` copies the coroutine's return values to the caller's stack, saves the coroutine state, and swaps back to the caller's stack/frames
-
-### 3.2 Implementation Approaches
-
-#### Approach A: Single VM loop, context switch via variables
-
-The VM has a pointer to "currently active" stack/frames. By default it points to the main VM's vectors. When a coroutine runs, swap the pointers.
+Add `Closure*` field to `CallFrame` for upvalue access (already needed by closures):
 
 ```cpp
-class VM {
-    std::vector<Value>* currentStack = &mainStack;
-    std::vector<CallFrame>* currentFrames = &mainFrames;
-    std::vector<Value> mainStack;
-    std::vector<CallFrame> mainFrames;
-    
-    // ...
+struct CallFrame {
+    Function* function = nullptr;
+    int pc = 0;
+    int fp = 0;
+    Closure* closure = nullptr;    // ← new: for upvalue access
 };
 ```
 
-All opcodes access `currentStack` and `currentFrames` instead of the member variables directly.
-
-#### Approach B: Nested interpret() calls
-
-`coroutine.resume(co)` calls `co->interpret()` which runs the coroutine's own `run()` loop. When the coroutine yields, `interpret()` returns.
-
-This reuses the existing `interpret(Function*)` pattern but duplicates the execution loop.
-
-**Decision**: Use Approach A. It minimizes code duplication and keeps the execution loop in one place.
-
-### 3.3 OP_YIELD
-
-```
-Syntax:  coroutine.yield(value)  → becomes OP_YIELD
-Stack:   pop(value_to_return_to_resumer), push values for resume()
-```
-
-Implementation:
-
-```cpp
-case OP_YIELD: {
-    // 1. Read the number of values to pass to resume() (arg)
-    uint8_t yieldArgCount = readByte();  // number of values to return to the resumer
-    
-    // 2. Save current execution state (PC points to next instruction)
-    frame()->pc -= 1;  // rewind to OP_YIELD (so resume re-executes it)
-    // Actually, we need to save PC after OP_YIELD, and on resume
-    // we skip past it and continue. Let's reconsider.
-    
-    // 3. Pop yield values from stack (these become resume() return values)
-    // ... 
-    
-    // 4. Switch to resumer's stack/frames
-    swapStack(&resumerStack, &resumerFrames);
-    
-    // 5. Push return values for resume()
-    for each yieldArg:
-        resumerStack.push_back(yieldArg);
-    // Or maybe success status first
-    resumerStack.push_back(Value::makeBool(true));  // success
-    // push yield values...
-    
-    break;
-}
-```
-
-**Refined design**: On yield, we need to:
-1. Save the current PC so resume knows where to continue
-2. Save the coroutine's full stack/frames state
-3. Switch to the resumer's context
-4. Push yield values to the resumer's stack
-
-On resume:
-1. Save the resumer's current PC/state
-2. Switch to the coroutine's context
-3. Restore PC (the instruction after the yield)
-4. Push resume arguments as yield() return values to the coroutine's stack
-
-**PC Saving**: Each `CallFrame` has a `pc`. For the coroutine, we save the entire `frames` vector (which includes the current PC). On resume, we restore it and continue.
-
-Actually, we don't need to save individual PCs. The coroutine's own `frames` vector IS its execution state. When we context-switch, we swap the entire `frames` vector. The PC is in each CallFrame.
-
-### 3.4 OP_RESUME
-
-```
-Syntax:  coroutine.resume(co, ...)
-Stack before: co, args...
-Stack after: true/false, values...
-```
-
-Implementation:
-
-```cpp
-case OP_RESUME: {
-    // 1. Pop coroutine value
-    Value coVal = pop();  
-    // Hmm, but args are between co and top. Need to access co below args.
-    
-    // 2. Verify it's a coroutine
-    if (coVal.type != ValueType::COROUTINE)
-        runtimeError("bad argument #1 to 'resume' (expected coroutine)");
-    
-    Coroutine* co = (Coroutine*)coVal.ptr;
-    
-    // 3. Switch to coroutine context
-    saveCurrentContext();   // save main's stack/frames/pc
-    restoreCoroutineContext(co);  // restore coroutine's saved state
-    
-    // 4. Push resume args to coroutine's stack (these become yield() return values)
-    for each arg:
-        co->stack.push_back(arg);
-    
-    // 5. The coroutine's PC should point to the instruction after its last OP_YIELD
-    // Continue execution...
-    
-    break;
-}
-```
-
----
-
-## 4. OP_YIELD / OP_RESUME Detailed Design
-
-### 4.1 Calling Convention
-
-Consider:
-```lua
-function consumer()
-    while true do
-        local val = coroutine.yield()  -- receives value from resume
-        if val == nil then break end
-        print(val)
-    end
-end
-
-local co = coroutine.create(consumer)
-coroutine.resume(co)           -- starts coroutine
-coroutine.resume(co, "hello")  -- resumes with "hello", yield() returns "hello"
-coroutine.resume(co)           -- resumes with nil, break exits loop
-coroutine.resume(co)           -- returns false, "dead coroutine"
-```
-
-The convention:
-- `coroutine.resume(co, v1, v2, ...)`:
-  1. Returns `true, yield_values...` if coroutine yielded
-  2. Returns `true, return_values...` if coroutine returned
-  3. Returns `false, error_message` if coroutine errored
-
-- `coroutine.yield(v1, v2, ...)`:
-  - Returns the arguments passed to the next `resume()`
-
-### 4.2 Stack Transfer on Yield/Resume
-
-#### Yield (coroutine → resumer)
-
-Before yield:
-```
-Coroutine stack: [...frame... | yield_args...]
-                                       ^-- sp
-```
-
-After yield:
-```
-Coroutine stack: [...frame...]   (preserved)
-Main stack:      [...main_frame... | true | yield_args...]
-                                                      ^-- sp
-```
-
-The coroutine's stack is preserved in its own `Coroutine` object. The main VM's stack gets the yield results pushed on top.
-
-#### Resume (resumer → coroutine)
-
-Before resume:
-```
-Main stack: [...main_frame... | co | resume_args...]
-                                               ^-- sp
-```
-
-The co is consumed (it's below the args). After resume switches context:
-```
-Coroutine stack: [...frame... | resume_args...]  
-                                      ^-- sp
-```
-
-The coroutine's PC has been advanced past its last OP_YIELD. The `resume_args` become the return values of `coroutine.yield()`.
-
-### 4.3 PC Management
-
-This is the trickiest part. When a coroutine yields, its current `frames.back().pc` points to the next instruction to execute (the instruction after `OP_YIELD`). When resumed, execution continues from that PC.
-
-However, `OP_YIELD` needs to read its operand (yield arg count) BEFORE saving PC. So the flow is:
-
-1. `OP_YIELD` reads `argCount` (PC advances past the opcode + operand)
-2. Pop `argCount` values from coroutine's stack (these are the yield values)
-3. Save coroutine context (frames, stack, PC is now after OP_YIELD)
-4. Swap to resumer's context
-5. Push results to resumer's stack
-
-On resume:
-1. Save resumer's context
-2. Restore coroutine's context (PC already points past OP_YIELD)
-3. Push resume args to coroutine's stack (these are yield() return values)
-4. Continue execution
-
-**Wait — there's a subtlety**. The `yield()` function call inside the coroutine's source code needs to return the values from resume. The expression `coroutine.yield(val)` is compiled as:
-
-```
-compileExpr(args)                  → push "val" 
-OP_CONSTANT <yield_builtin_index>  → push the yield function pointer
-OP_CALL 1                          → call yield(val)
-```
-
-But `yield` is special — it must NOT set up a normal CallFrame. Instead, the `yield` function (a builtin C function) triggers the coroutine suspension.
-
-**Alternative**: Instead of making `yield` a callable function, make it an **opcode**:
-
-```lua
-coroutine.yield(val)  →  compiles to: push(val), OP_YIELD
-```
-
-This is the approach in Lua's implementation — `yield` is not a normal function call; it's an opcode inserted by the compiler when it sees `coroutine.yield(...)`. This avoids the complication of having a call frame for yield.
-
-### 4.4 Compiler Special-Casing for yield
-
-Similar to how `print(...)` is special-cased to `OP_PRINTLN`:
-
-```cpp
-case ExprType::CALL: {
-    auto d = (CallData*)expr->data;
-    // ...
-    
-    if (isBuiltinCall(d->callee, "coroutine.yield")) {
-        for (auto arg : d->args) compileExpr(arg);
-        emitOpcode(expr->line, OP_YIELD);
-        emitByte((uint8_t)d->args.size());
-        break;
-    }
-    
-    if (isBuiltinCall(d->callee, "coroutine.create")) {
-        compileExpr(d->args[0]);  // push the function
-        emitOpcode(expr->line, OP_CREATE_COROUTINE);
-        break;
-    }
-}
-```
-
-This keeps `yield` as a bytecode instruction rather than a function call, eliminating the need for complex call-frame manipulation during suspension.
-
-For `resume`, the `coroutine.resume(co, ...)` call is compiled as:
-
-```cpp
-if (isBuiltinCall(d->callee, "coroutine.resume")) {
-    compileExpr(co_expr);
-    for (size_t i = 1; i < d->args.size(); i++) compileExpr(d->args[i]);
-    emitOpcode(expr->line, OP_RESUME);
-    emitByte((uint8_t)(d->args.size() - 1));  // arg count (excluding co)
-    break;
-}
-```
-
----
-
-## 5. New Opcodes Summary
-
-| Opcode | Encoding | Stack Effect | Description |
-|--------|----------|-------------|-------------|
-| `OP_CREATE_COROUTINE` | 1B | `pop(closure) → push(coroutine)` | Create coroutine from a closure |
-| `OP_RESUME` | 1+1 | `pop(co), pop(args) → push(bool), push(values)` | Resume coroutine |
-| `OP_YIELD` | 1+1 | `pop(args) → push(values)` | Yield from current coroutine |
-| `OP_COROUTINE_STATUS` | 1B | `pop(co) → push(string)` | Get coroutine state |
-
----
-
-## 6. Built-in Functions Registration
-
-The built-in functions `coroutine.create`, `coroutine.resume`, `coroutine.yield`, `coroutine.status` are registered as native C functions (closures wrapping function pointers):
-
-```cpp
-// In VM initialization:
-struct NativeFn {
-    const char* name;
-    NativeFunc fn;  // void(*)(VM&, int argCount)
-};
-
-// Register coroutine table as a builtin global
-// coroutine = { create = <native>, resume = <native>, yield = <native>, status = <native> }
-```
-
-Or more simply, since tables aren't implemented yet: register each as a top-level local, and the compiler transforms `coroutine.create(x)` into the appropriate opcode at compile time (like `print`).
-
-For Phase 3.5 (intermediate before full tables), use compiler intrinsics:
-- `coroutine.create(f)` → `OP_CREATE_COROUTINE`
-- `coroutine.resume(co, ...)` → `OP_RESUME`  
-- `coroutine.yield(...)` → `OP_YIELD`
-- `coroutine.status(co)` → `OP_COROUTINE_STATUS`
-
----
-
-## 7. VM Context Switching
+### 3.2 VM Class Changes
 
 ```cpp
 class VM {
-    // Main execution state
+    // Main execution state (original members)
     std::vector<Value> mainStack;
     std::vector<CallFrame> mainFrames;
-    
+
+    // Saved main context (for coroutine switching)
+    std::vector<Value> savedMainStack;
+    std::vector<CallFrame> savedMainFrames;
+
     // Currently active state (points to either main or a coroutine)
     std::vector<Value>* activeStack = &mainStack;
     std::vector<CallFrame>* activeFrames = &mainFrames;
-    
-    // Helper to switch context
-    void switchTo(std::vector<Value>& stack, std::vector<CallFrame>& frames) {
-        activeStack = &stack;
-        activeFrames = &frames;
+    Coroutine* activeCoroutine = nullptr;  // non-null if inside a coroutine
+
+    // Accessor helpers (opcodes use these instead of direct stack/frames access)
+    Value& stackAt(int i) { return activeStack->at(i); }
+    size_t stackSize() const { return activeStack->size(); }
+    void push(Value v) { activeStack->push_back(v); }
+    Value pop() {
+        if (activeStack->empty()) { runtimeError("Stack underflow"); return Value::nil(); }
+        Value v = activeStack->back();
+        activeStack->pop_back();
+        return v;
     }
-    
-    // All opcodes use aliases:
-    auto& stack = *activeStack;
-    auto& frames = *activeFrames;
+    Value peek(int d = 0) { return (*activeStack)[activeStack->size() - 1 - d]; }
+    CallFrame* frame() { return &activeFrames->back(); }
+
+    // Context switching
+    void switchTo(Coroutine* co);          // main → coroutine
+    void switchToMain();                     // coroutine → main
+    void switchToResumer(Coroutine* co);    // coroutine → its resumer
+
+    // ... rest of existing methods
 };
 ```
 
-**C++ reference members** need careful handling. Better approach: use inline accessor methods:
+### 3.3 Existing Opcode Refactoring
+
+All existing opcodes must use the accessor methods instead of direct `stack`/`frames` member access:
+
+| Direct access | Replace with |
+|---------------|-------------|
+| `stack[fp + slot]` | `stackAt(fp + slot)` |
+| `stack.push_back(v)` | `push(v)` |
+| `stack.pop_back()` / `pop()` | `pop()` |
+| `stack.back()` | `peek()` |
+| `stack.size()` | `stackSize()` |
+| `frames.back()` | `*frame()` |
+| `frames.push_back(cf)` | `activeFrames->push_back(cf)` |
+| `frames.pop_back()` | `activeFrames->pop_back()` |
+
+This refactoring is mechanical but must be done carefully to avoid regressions.
+
+### 3.4 OP_CALL Refactoring for Closures
+
+`OP_CALL` currently pops a function **index** (integer). It must be changed to pop a **Closure** object:
 
 ```cpp
-Value& stackAt(int i) { return activeStack->at(i); }
-void push(Value v) { activeStack->push_back(v); }
-Value pop() { /* use activeStack */ }
-CallFrame* frame() { return &activeFrames->back(); }
-```
+case OP_CALL: {
+    uint8_t argCount = readByte();
+    int calleeSlot = (int)stackSize() - argCount - 1;
+    Value calleeVal = stackAt(calleeSlot);
 
-This keeps the opcode implementations clean and the context switch is just a pointer swap.
+    if (calleeVal.type != ValueType::CLOSURE)
+        runtimeError("attempt to call a non-function value");
 
----
+    Closure* closure = (Closure*)calleeVal.ptr;
+    Function* fn = closure->function;
 
-## 8. Coroutine Memory Layout
+    if (fn->arity != argCount)
+        runtimeError("expected %d arguments, got %d", fn->arity, argCount);
 
-```
-Coroutine {
-    state: CoroutineState          // SUSPENDED | RUNNING | DEAD
-    closure: Closure*              // the wrapped closure
-    stack: vector<Value>           // saved stack
-    frames: vector<CallFrame>      // saved call frames
+    // Remove closure value from stack (args remain)
+    // Shift args down or reorg frame pointer
+    // ... (see closures.md for full detail)
+
+    CallFrame cf;
+    cf.function = fn;
+    cf.pc = 0;
+    cf.fp = (int)stackSize() - argCount;
+    cf.closure = closure;  // ← new
+
+    while ((int)stackSize() < cf.fp + fn->numLocals)
+        push(Value::nil());
+
+    activeFrames->push_back(cf);
+    break;
 }
 ```
 
-- Created by `OP_CREATE_COROUTINE`: allocate `Coroutine`, set `closure`, state = `SUSPENDED`, stack and frames empty.
-- On first resume: no saved state exists, so start executing the closure from pc=0 (like a normal call).
-- On subsequent resumes: restore saved stack/frames, continue execution.
+---
 
-### 8.1 First Resume
+## 4. New Opcodes
 
-First resume is special — the coroutine has no saved frames. We must set up the initial call:
+### 4.1 Enum Values
+
+Add after `OP_HALT` (currently ~45, last explicit opcode):
+
+```cpp
+enum Opcode : uint8_t {
+    // ... existing opcodes ...
+    OP_HALT,
+
+    // Coroutines
+    OP_CREATE_COROUTINE,   // create coroutine from closure
+    OP_RESUME,             // resume a coroutine
+    OP_YIELD,              // yield from current coroutine
+    OP_COROUTINE_STATUS,   // get coroutine state string
+};
+```
+
+### 4.2 OP_CREATE_COROUTINE
+
+**Encoding**: `OP_CREATE_COROUTINE` (1 byte)
+
+**Stack**: `pop(closure) → push(coroutine)`
+
+```cpp
+case OP_CREATE_COROUTINE: {
+    Value v = pop();
+    if (v.type != ValueType::CLOSURE)
+        runtimeError("coroutine.create: expected function, got %s", valueTypeName(v.type));
+
+    auto* co = new Coroutine();
+    co->closure = (Closure*)v.ptr;
+    co->state = CoroutineState::SUSPENDED;
+    push(Value::makeCoroutine(co));  // new helper
+    break;
+}
+```
+
+`Value::makeCoroutine(Coroutine*)` stores the pointer in `Value::ptr` with `ValueType::COROUTINE`.
+
+### 4.3 OP_RESUME
+
+**Encoding**: `OP_RESUME <argCount:uint8>` (2 bytes)
+
+**Stack before**: `[..., co, arg1, arg2, ...]`  (argCount args after co)
+**Stack after**: `[..., true/false, value1, ...]`
 
 ```cpp
 case OP_RESUME: {
-    Value coVal = stack[...];  // the coroutine value
+    uint8_t argCount = readByte();
+
+    // Co is below the args at stack[stackSize() - argCount - 1]
+    int coSlot = (int)stackSize() - argCount - 1;
+    Value coVal = stackAt(coSlot);
+
+    if (coVal.type != ValueType::COROUTINE)
+        runtimeError("bad argument #1 to 'resume' (expected coroutine)");
+
     Coroutine* co = (Coroutine*)coVal.ptr;
-    
+
     if (co->state == CoroutineState::DEAD) {
+        // Remove co and args from stack, push result
+        // ... (stack cleanup)
         push(Value::makeBool(false));
         push(Value::makeStr(internString("cannot resume dead coroutine")));
         break;
     }
-    
-    if (co->state == CoroutineState::SUSPENDED && co->frames.empty()) {
-        // First resume: set up initial call
+
+    // Save current context (whoever is calling resume)
+    if (activeCoroutine) {
+        // A coroutine is resuming another coroutine
+        activeCoroutine->stack = std::move(*activeStack);
+        activeCoroutine->frames = std::move(*activeFrames);
+        co->resumer = activeCoroutine;
+    } else {
+        // Main VM is resuming a coroutine
+        savedMainStack = std::move(*activeStack);
+        savedMainFrames = std::move(*activeFrames);
+        co->resumer = nullptr;
+    }
+
+    // Switch to target coroutine
+    switchTo(co);
+    co->state = CoroutineState::RUNNING;
+
+    if (co->frames.empty()) {
+        // First resume: set up initial call frame
         CallFrame cf;
         cf.function = co->closure->function;
         cf.pc = 0;
         cf.fp = 0;
         cf.closure = co->closure;
-        
-        // Copy args from resumer's stack to coroutine's stack
+
         co->stack.clear();
-        // Reserve space for locals
+        // Push args (from resumer) as the function's parameters
+        for (int i = 0; i < argCount; i++)
+            co->stack.push_back(stackAt(coSlot + 1 + i));  // index in resumer's stack
+        // Extend for locals
         while ((int)co->stack.size() < cf.fp + cf.function->numLocals)
             co->stack.push_back(Value::nil());
-        // Push args (which will be at fp+0, fp+1, ...)
-        // ... (handle arg copying)
-        
+
         co->frames.push_back(cf);
-        co->state = CoroutineState::RUNNING;
+    } else {
+        // Subsequent resume: push args as yield() return values
+        for (int i = 0; i < argCount; i++)
+            co->stack.push_back(stackAt(coSlot + 1 + i));
     }
-    
-    // Switch to coroutine context
-    switchContext(co);
+
+    // Clean up resumer's stack (remove co and args)
+    // Since we moved the resumer's stack into savedMainStack or
+    // the resumer coroutine's stack, we just let the switchTo handle it.
+    break;
+}
+```
+
+### 4.4 OP_YIELD
+
+**Encoding**: `OP_YIELD <argCount:uint8>` (2 bytes)
+
+**Stack before**: `[..., arg1, arg2, ...]`  (yield return values)
+**Stack after** (resumer's): `[..., true, arg1, arg2, ...]`
+
+```cpp
+case OP_YIELD: {
+    uint8_t argCount = readByte();
+
+    if (!activeCoroutine)
+        runtimeError("cannot yield from main thread");
+
+    Coroutine* co = activeCoroutine;
+
+    // Pop yield values from coroutine's stack
+    std::vector<Value> yieldVals;
+    for (int i = 0; i < argCount; i++)
+        yieldVals.insert(yieldVals.begin(), pop());
+    // yieldVals are now in source order (top-of-stack was last arg)
+
+    // Save coroutine state
+    co->state = CoroutineState::SUSPENDED;
+    co->stack = std::move(*activeStack);
+    co->frames = std::move(*activeFrames);
+
+    // Switch to resumer
+    if (co->resumer) {
+        switchTo(co->resumer);
+    } else {
+        switchToMain();
+    }
+
+    // Push yield values to resumer's stack
+    push(Value::makeBool(true));  // success flag
+    for (auto& val : yieldVals)
+        push(val);
+
+    break;
+}
+```
+
+### 4.5 OP_COROUTINE_STATUS
+
+**Encoding**: `OP_COROUTINE_STATUS` (1 byte)
+
+**Stack**: `pop(coroutine) → push(string)`
+
+```cpp
+case OP_COROUTINE_STATUS: {
+    Value v = pop();
+    if (v.type != ValueType::COROUTINE)
+        runtimeError("bad argument #1 to 'coroutine.status' (expected coroutine)");
+
+    Coroutine* co = (Coroutine*)v.ptr;
+    const char* status;
+    switch (co->state) {
+        case CoroutineState::SUSPENDED: status = "suspended"; break;
+        case CoroutineState::RUNNING:   status = "running"; break;
+        case CoroutineState::DEAD:      status = "dead"; break;
+    }
+    push(Value::makeStr(internString(status)));
     break;
 }
 ```
 
 ---
 
-## 9. Error Handling
+## 5. OP_RET Coroutine Handling
 
-When a coroutine errors (runtime error during its execution), the error is caught and returned as `false, error_message` from `resume()`:
+When `OP_RET` executes inside a coroutine (i.e., `activeCoroutine != nullptr`), the coroutine transitions to DEAD and switches back to the resumer:
 
 ```cpp
-// In the execution loop:
-try {
-    for (;;) { ... }
-} catch (const std::runtime_error& e) {
-    if (inCoroutine()) {
-        // Switch back to resumer
-        coroutine->state = CoroutineState::DEAD;
-        switchToResumer();
-        push(Value::makeBool(false));
-        push(Value::makeStr(internString(e.what())));
+case OP_RET: {
+    Value result = pop();
+
+    if (activeCoroutine) {
+        // Coroutine function is returning
+        Coroutine* co = activeCoroutine;
+        co->state = CoroutineState::DEAD;
+
+        // Switch to resumer
+        if (co->resumer)
+            switchTo(co->resumer);
+        else
+            switchToMain();
+
+        // Push return value to resumer's stack
+        push(Value::makeBool(true));  // success flag
+        push(result);
+        break;
+    }
+
+    // Normal return (existing logic)
+    int oldFp = frame()->fp;
+    activeFrames->pop_back();
+    if (activeFrames->empty()) { push(result); return OK; }
+    while ((int)stackSize() > oldFp) pop();
+    push(result);
+    break;
+}
+```
+
+---
+
+## 6. Context Switching Implementation
+
+```cpp
+void VM::switchTo(Coroutine* co) {
+    activeStack = &co->stack;
+    activeFrames = &co->frames;
+    activeCoroutine = co;
+}
+
+void VM::switchToMain() {
+    activeStack = &mainStack;
+    activeFrames = &mainFrames;
+    activeCoroutine = nullptr;
+
+    // Restore saved main context
+    mainStack = std::move(savedMainStack);
+    mainFrames = std::move(savedMainFrames);
+}
+
+void VM::switchToResumer(Coroutine* co) {
+    if (co->resumer) {
+        switchTo(co->resumer);
     } else {
-        throw;  // re-throw to main caller
+        switchToMain();
     }
 }
 ```
 
 ---
 
+## 7. Compiler Changes
+
+### 7.1 `coroutine.create(f)` → OP_CREATE_COROUTINE
+
+In `compileExpr(CALL)`, add:
+
+```cpp
+if (isCoroutineCall(d->callee, "create")) {
+    if (d->args.size() != 1)
+        error(expr->line, "coroutine.create: expected 1 argument");
+    compileExpr(d->args[0]);
+    emitOpcode(expr->line, OP_CREATE_COROUTINE);
+    break;
+}
+```
+
+Where `isCoroutineCall` checks for `callee->type == ExprType::NAME && strcmp(callee->strVal, "coroutine.create") == 0`. Or more flexibly, check for a dotted name `coroutine.create` using member access syntax when that's parsed.
+
+### 7.2 `coroutine.resume(co, ...)` → OP_RESUME
+
+```cpp
+if (isCoroutineCall(d->callee, "resume")) {
+    if (d->args.size() < 1)
+        error(expr->line, "coroutine.resume: expected at least 1 argument");
+    compileExpr(d->args[0]);  // the coroutine
+    for (size_t i = 1; i < d->args.size(); i++)
+        compileExpr(d->args[i]);  // resume args
+    emitOpcode(expr->line, OP_RESUME);
+    emitByte((uint8_t)(d->args.size() - 1));
+    break;
+}
+```
+
+### 7.3 `coroutine.yield(...)` → OP_YIELD
+
+```cpp
+if (isCoroutineCall(d->callee, "yield")) {
+    for (auto arg : d->args)
+        compileExpr(arg);
+    emitOpcode(expr->line, OP_YIELD);
+    emitByte((uint8_t)d->args.size());
+    break;
+}
+```
+
+### 7.4 `coroutine.status(co)` → OP_COROUTINE_STATUS
+
+```cpp
+if (isCoroutineCall(d->callee, "status")) {
+    if (d->args.size() != 1)
+        error(expr->line, "coroutine.status: expected 1 argument");
+    compileExpr(d->args[0]);
+    emitOpcode(expr->line, OP_COROUTINE_STATUS);
+    break;
+}
+```
+
+### 7.5 Dot-Name Parsing
+
+The `coroutine.create` syntax requires the parser to produce a dotted name expression. If the parser doesn't support `prefixexpr '.' name` yet, add:
+
+```cpp
+// In primaryExpr or prefixExpr:
+if (match(TK_DOT)) {
+    Token name = consume(TK_NAME, "expected name after '.'");
+    // Build INDEX expression: callee=coroutine, key="create"
+    Expr* callee = previous;  // the "coroutine" part
+    Expr* key = Expr::makeStr(name.line, copyStr(name.start));
+    expr = Expr::makeIndex(expr->line, callee, key);
+}
+```
+
+Or, simpler: register `coroutine` as a local variable (a table) and `create`/`resume`/`yield`/`status` as method-like accesses. Since MiniLua doesn't have tables yet, the simplest approach is to handle `NAME DOT NAME LPAREN ... RPAREN` as a special call syntax in the parser, producing a CALL node where the callee is a dotted name.
+
+Actually, the simplest approach for Phase 3.5: treat `coroutine.create` as a single identifier at the lexer level? No, that's hacky.
+
+Better approach: parse `coroutine.create` as a member access expression (`INDEX`), then detect it in the compiler by checking if the callee is an `INDEX` node with the obj being `NAME("coroutine")`. This is more general and extensible.
+
+Alternatively, for the initial implementation, register `coroutine_create`, `coroutine_resume`, `coroutine_yield`, `coroutine_status` as flat names (using underscore instead of dot). The user writes `coroutine_create(f)` instead of `coroutine.create(f)`. This avoids the need for dotted name parsing entirely.
+
+**Decision**: Use flat names (`coroutine_create`, `coroutine_resume`, `coroutine_yield`, `coroutine_status`) as compiler intrinsics for Phase 3.5. Support for the dotted syntax `coroutine.create` can be added when table member access is implemented in Phase 4.
+
+---
+
+## 8. Error Handling
+
+### 8.1 Runtime Error Inside Coroutine
+
+When a runtime error occurs inside a coroutine (e.g., type error, stack underflow), the error is caught and returned as `(false, error_message)` from `resume()`:
+
+```cpp
+// Modified execution loop:
+Result VM::interpret(Function* func) {
+    // ... setup ...
+
+    try {
+        for (;;) {
+            uint8_t instr = readByte();
+            switch (instr) {
+                // ... all opcodes ...
+            }
+        }
+    } catch (const std::runtime_error& e) {
+        if (activeCoroutine) {
+            // Coroutine errored: switch back to resumer, return error
+            Coroutine* co = activeCoroutine;
+            co->state = CoroutineState::DEAD;
+
+            if (co->resumer)
+                switchTo(co->resumer);
+            else
+                switchToMain();
+
+            push(Value::makeBool(false));
+            push(Value::makeStr(internString(e.what())));
+            return OK;
+        }
+        throw;  // re-throw to top-level caller
+    }
+}
+```
+
+### 8.2 Attempting to Yield from Main
+
+```lua
+coroutine.yield(42)  -- error: cannot yield from main thread
+```
+
+Handled by the runtime error check in `OP_YIELD`: `if (!activeCoroutine) runtimeError(...)`.
+
+### 8.3 Attempting to Resume Dead Coroutine
+
+```lua
+local co = coroutine.create(function() end)
+coroutine.resume(co)   -- true
+coroutine.resume(co)   -- false, "cannot resume dead coroutine"
+```
+
+Handled by the state check in `OP_RESUME`.
+
+---
+
+## 9. Memory Management
+
+### 9.1 Coroutine Lifetime
+
+`Coroutine` objects are heap-allocated by `OP_CREATE_COROUTINE` and become owned by the `Value` system (stored in `Value::ptr` with `ValueType::COROUTINE`). When no longer referenced, they leak.
+
+For now, no GC. Acceptable for Phase 3.5. A future GC pass would trace coroutine objects and their stacks.
+
+### 9.2 Stack Ownership
+
+Each `Coroutine` owns its `stack` and `frames` vectors. When switching contexts, ownership is transferred via `std::move`:
+
+```
+coroutine.yield:
+  co->stack = std::move(*activeStack);    // coroutine takes ownership
+  switchTo(resumer);                        // activeStack now points to resumer's stack
+
+resume:
+  savedMainStack = std::move(*activeStack);  // save resumer's stack
+  switchTo(co);                                // activeStack now points to co->stack
+```
+
+This ensures only one copy of the stack data exists at any time (zero-copy context switch).
+
+---
+
 ## 10. Implementation Order
+
+### Step 0: OP_CALL Refactoring (Closure prerequisite)
+- Change `OP_CALL` from function-index to closure-based
+- Add `Closure*` to `CallFrame`
+- Refactor all opcodes to use accessor methods (`push()`, `pop()`, `peek()`, `stackAt()`, `frame()`)
 
 ### Step 1: Coroutine Infrastructure
 - Add `ValueType::COROUTINE` to value.hpp
-- Define `Coroutine` struct (state, closure, saved stack, saved frames)
-- Define `CoroutineState` enum (SUSPENDED, RUNNING, DEAD)
+- Define `Coroutine` struct and `CoroutineState` enum
+- Add `Value::makeCoroutine()` helper
 
 ### Step 2: VM Context Switching
-- Add `activeStack`, `activeFrames` pointers to VM
-- Add `switchTo()` / `switchContext()` methods
-- Refactor all opcode stack/frame access to use the active pointers
+- Add `activeStack`, `activeFrames`, `activeCoroutine` pointers to VM
+- Add `savedMainStack`, `savedMainFrames` for main context backup
+- Implement `switchTo()`, `switchToMain()`, `switchToResumer()`
+- Refactor all opcode stack/frame access to use pointer-based helpers
 
 ### Step 3: New Opcodes
 - Add `OP_CREATE_COROUTINE`, `OP_RESUME`, `OP_YIELD`, `OP_COROUTINE_STATUS` to chunk.hpp
 - Implement each in the VM execution loop
+- Modify `OP_RET` for coroutine DEAD transition
+- Add try-catch for coroutine error handling
 - Add disassembly support
 
-### Step 4: First Resume & Yield
-- Implement initial frame setup for first resume
-- Implement OP_YIELD: save coroutine state, switch to resumer, push yield values
-- Implement OP_RESUME: save resumer state, switch to coroutine, push args as yield return values
+### Step 4: Compiler Integration
+- Detect `coroutine_create`, `coroutine_resume`, `coroutine_yield`, `coroutine_status` in `compileExpr(CALL)`
+- Emit corresponding opcodes
 
-### Step 5: Compiler Integration
-- Special-case `coroutine.create()`, `coroutine.resume()`, `coroutine.yield()`, `coroutine.status()` in compileExpr(CALL)
-- Emit appropriate opcodes instead of function calls
+### Step 5: Testing
 
-### Step 6: Error Handling
-- Wrap coroutine execution in try-catch
-- On error, transition coroutine to DEAD state
-- Return error message from resume()
-
-### Step 7: Testing
-- Simple yield/resume: coroutine yields once, resumer gets value
-- Multiple yields: coroutine yields multiple times with different values
-- Value passing: resume passes values that become yield() return values
-- Return values: coroutine returns values on completion
-- Dead coroutine: attempting to resume a dead coroutine returns error
-- Coroutine calling another function (nested frames within coroutine)
-- Nested coroutines (one coroutine resumes another)
-- Error in coroutine: caught and returned as (false, msg)
+| Test | Description |
+|------|-------------|
+| Create & resume | `coroutine_create(f)` then `coroutine_resume(co)` |
+| Single yield | Coroutine yields once, resumer receives value |
+| Multiple yields | Coroutine yields multiple times with different values |
+| Value passing | Resume passes values that become yield() return values |
+| Return values | Coroutine returns values on completion (true, vals) |
+| Dead resume | Resuming a dead coroutine returns false, error |
+| Nested calls | Coroutine calls another function internally |
+| Nested coroutines | Coroutine A resumes coroutine B |
+| Error in coroutine | Runtime error caught as (false, msg) |
+| Yield from main | Error: cannot yield from main thread |
 
 ---
 
@@ -574,45 +670,61 @@ function makeCounter()
     end
 end
 
-local co = coroutine.create(makeCounter())
-print(coroutine.resume(co))  -- (true, 1)
-print(coroutine.resume(co))  -- (true, 2)
+local co = coroutine_create(makeCounter())
+print(coroutine_resume(co))  -- (true, 1)
+print(coroutine_resume(co))  -- (true, 2)
 ```
 
 The closure's upvalues persist across yields because the coroutine's stack (including the frame that created the closure) is preserved. When the coroutine yields, the enclosing function's frame is saved in the coroutine's stack, and its upvalues remain valid (or are closed when that function returns inside the coroutine).
 
 ---
 
-## 12. Coroutine Lifecycle Example
+## 12. Complete Lifecycle Example
 
 ```
-Initial state:
-  Main: stack=[...], frames=[main]
-  co:   stack=[], frames=[], state=SUSPENDED
+Initial:
+  Main:  mainStack=[...], mainFrames=[main], activeStack=&mainStack
+  co:    stack=[], frames=[], state=SUSPENDED, resumer=nullptr
 
 1. resume(co, "hello"):
-  Main: save PC; switch to co
-  co:   setup initial call; state=RUNNING
-  co:   stack=[closure, "hello"], frames=[fact_0]
+  → Save: savedMainStack=mainStack, savedMainFrames=mainFrames
+  → switchTo(co): activeStack=&co->stack, activeFrames=&co->frames, activeCoroutine=co
+  → First resume: setup frame, push "hello" as arg
+  → co: stack=["hello", nil...], frames=[fact(n)], state=RUNNING
 
-2. Inside coroutine, val = yield():
-  co:   save PC; switch to main
-  co:   stack=[...], frames=[fact_0], state=SUSPENDED
-  Main: restore PC; push true; push val → stack=[..., true, "hello"]
+2. Inside coroutine, val = yield(42):
+  → Pop 42 from co stack
+  → co->stack = co's stack; co->frames = co's frames; state=SUSPENDED
+  → switchToMain(): restore savedMainStack/Frames; activeCoroutine=nullptr
+  → Push (true, 42) to mainStack
 
 3. resume(co, "world"):
-  Main: save PC; switch to co
-  co:   restore PC; push "world" as yield return
-  co:   state=RUNNING
-  co:   stack=[..., "world"], frames=[fact_0]
+  → Save: savedMainStack=mainStack, savedMainFrames=mainFrames
+  → switchTo(co): restore co->stack/frames
+  → Push "world" as yield return value
+  → Continue execution after OP_YIELD
 
-4. coroutine returns:
-  co:   return values on stack; state=DEAD
-  co:   stack=[...], frames=[fact_0 (popped)]
-  Main: restore; push true; push return_vals
+4. Coroutine returns "done":
+  → co->state = DEAD
+  → if co->resumer==nullptr: switchToMain()
+  → Push (true, "done") to mainStack
 
 5. resume(co) again:
-  Main: switch to co
-  co:   state=DEAD → push false, error message
-  (no context switch; error returned to main)
+  → co->state == DEAD
+  → Push (false, "cannot resume dead coroutine") to mainStack
+  → No context switch
 ```
+
+---
+
+## 13. Open Questions
+
+1. **Should `coroutine.yield()` with no args return nil?** Yes, yield() with no args returns nil (zero yield values → resume gets true).
+
+2. **What happens if a coroutine's closure has upvalues that close during yield?** If the coroutine's function (not the closure) returns, upvalues are closed as normal. The coroutine transitions to DEAD.
+
+3. **Should `coroutine.resume()` pass all extra args as yield return values, or just the first?** All extra args become yield's return values. MiniLua is single-return, so only the first is accessible via `val = yield()`, but the resumer can inspect via ... (if added later).
+
+4. **Stack size limits?** No hard limit. Each coroutine's stack grows on demand. A deeply recursive coroutine may run out of memory.
+
+5. **Can a coroutine be resumed from a different coroutine than the one that yielded it?** Yes, by passing the coroutine to another coroutine via shared state (e.g., a table). The `resumer` field tracks who should receive the yield values; if coroutine B resumes coroutine A, A's resumer is B. When A yields, control returns to B.

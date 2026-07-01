@@ -1,5 +1,6 @@
 #pragma once
 #include <cstdint>
+#include <cstdio>
 #include <vector>
 #include <string>
 #include "value.hpp"
@@ -75,6 +76,11 @@ struct Chunk {
 
     ~Chunk();
     void clear();
+
+    // Serialization: write chunk to file (returns false on error)
+    bool serialize(FILE* f) const;
+    // Deserialization: read chunk from file (returns false on error)
+    bool deserialize(FILE* f);
 };
 
 struct Function {
@@ -82,4 +88,15 @@ struct Function {
     Chunk chunk;
     int arity = 0;
     int numLocals = 0; // total local slots (includes args)
+
+    // Serialization: write function to file (returns false on error)
+    bool serialize(FILE* f) const;
+    // Deserialization: read function from file (returns false on error)
+    bool deserialize(FILE* f);
+
+    // Write/read a complete program (multiple functions) to/from .mbc file
+    static bool writeProgram(const char* path,
+                             const std::vector<Function*>& funcs);
+    static bool readProgram(const char* path,
+                            std::vector<Function*>& outFuncs);
 };

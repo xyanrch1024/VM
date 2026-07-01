@@ -16,7 +16,9 @@ Function* VM::newFunction(const std::string& name, int arity) {
     return ptr;
 }
 
-void VM::addFunction(Function* func) { (void)func; }
+void VM::addFunction(Function* func) {
+    functions.push_back(std::unique_ptr<Function>(func));
+}
 Function* VM::getFunction(int index) { return functions[index].get(); }
 
 std::string* VM::internString(const std::string& s) {

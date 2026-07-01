@@ -1,6 +1,7 @@
 #include "vm.hpp"
 #include "chunk.hpp"
 #include "debug.hpp"
+#include "mbs.hpp"
 #include "parser.hpp"
 #include "compiler.hpp"
 #include <cstring>
@@ -454,9 +455,176 @@ static std::string readFile(const char* path) {
 }
 
 // ============================================================
+// Compile source to bytecode file
+// ============================================================
+static bool compileToBytecode(const char* srcPath, const char* outPath) {
+    std::string source = readFile(srcPath);
+    if (source.empty()) return false;
+
+    Parser parser(source);
+    std::vector<Stmt*> stmts = parser.parse();
+    if (stmts.empty()) return false;
+
+    VM vm;
+    Compiler compiler(vm);
+    Function* func = compiler.compile(stmts, "main");
+    if (compiler.hadError()) return false;
+
+    std::vector<Function*> funcs = { func };
+    // Also collect any additional functions from the VM
+    for (int i = 1; i < (int)vm.functionCount(); i++)
+        funcs.push_back(vm.getFunction(i));
+
+    bool ok = Function::writeProgram(outPath, funcs);
+    if (!ok) {
+        fprintf(stderr, "error: failed to write '%s'\n", outPath);
+        return false;
+    }
+    return true;
+}
+
+// ============================================================
+// Execute bytecode file
+// ============================================================
+static int runBytecode(const char* bcPath) {
+    std::vector<Function*> funcs;
+    if (!Function::readProgram(bcPath, funcs)) {
+        fprintf(stderr, "error: failed to read bytecode file '%s'\n", bcPath);
+        return 1;
+    }
+
+    VM vm;
+    for (auto* fn : funcs)
+        vm.addFunction(fn);
+
+    if (getenv("VM_DEBUG")) {
+        for (auto* fn : funcs) {
+            disassembleChunk(fn->chunk, fn->name.c_str());
+        }
+    }
+
+    return vm.interpret(funcs[0]) == VM::OK ? 0 : 1;
+}
+
+// ============================================================
 // main
 // ============================================================
 int main(int argc, char** argv) {
+    // Compile source to bytecode: -c input.lua -o output.mbc
+    if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
+        const char* srcPath = argv[2];
+        const char* outPath = nullptr;
+        for (int i = 3; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "-o") == 0) {
+                outPath = argv[i + 1];
+                break;
+            }
+        }
+        if (!outPath) {
+            fprintf(stderr, "usage: %s -c input.lua -o output.mbc\n", argv[0]);
+            return 1;
+        }
+        return compileToBytecode(srcPath, outPath) ? 0 : 1;
+    }
+
+    // Execute bytecode file: -x file.mbc
+    if (argc >= 3 && strcmp(argv[1], "-x") == 0) {
+        return runBytecode(argv[2]);
+    }
+
+    // Disassemble .mbc to .mbs text: -d file.mbc
+    if (argc >= 3 && strcmp(argv[1], "-d") == 0) {
+        std::vector<Function*> funcs;
+        if (!Function::readProgram(argv[2], funcs)) {
+            fprintf(stderr, "error: failed to read bytecode file '%s'\n", argv[2]);
+            return 1;
+        }
+        std::string text = disassembleProgramToText(funcs);
+        const char* outPath = nullptr;
+        for (int i = 3; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "-o") == 0) { outPath = argv[i + 1]; break; }
+        }
+        if (outPath) {
+            FILE* f = fopen(outPath, "w");
+            if (!f) { fprintf(stderr, "error: cannot write '%s'\n", outPath); return 1; }
+            fwrite(text.data(), 1, text.size(), f);
+            fclose(f);
+        } else {
+            printf("%s", text.c_str());
+        }
+        for (auto* fn : funcs) delete fn;
+        return 0;
+    }
+
+    // Compile source to .mbs text: -S input.lua -o output.mbs
+    if (argc >= 3 && strcmp(argv[1], "-S") == 0) {
+        std::string source = readFile(argv[2]);
+        if (source.empty()) return 1;
+
+        Parser parser(source);
+        std::vector<Stmt*> stmts = parser.parse();
+        if (stmts.empty()) return 1;
+
+        VM vm;
+        Compiler compiler(vm);
+        Function* func = compiler.compile(stmts, "main");
+        if (compiler.hadError()) return 1;
+
+        std::vector<Function*> funcs = { func };
+        for (int i = 1; i < (int)vm.functionCount(); i++)
+            funcs.push_back(vm.getFunction(i));
+
+        std::string text = disassembleProgramToText(funcs);
+
+        const char* outPath = nullptr;
+        for (int i = 3; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "-o") == 0) {
+                outPath = argv[i + 1];
+                break;
+            }
+        }
+        if (outPath) {
+            FILE* f = fopen(outPath, "w");
+            if (!f) { fprintf(stderr, "error: cannot write '%s'\n", outPath); return 1; }
+            fwrite(text.data(), 1, text.size(), f);
+            fclose(f);
+        } else {
+            printf("%s", text.c_str());
+        }
+        return 0;
+    }
+
+    // Assemble .mbs text to .mbc binary: -a input.mbs -o output.mbc
+    if (argc >= 3 && strcmp(argv[1], "-a") == 0) {
+        std::string mbsText = readFile(argv[2]);
+        if (mbsText.empty()) return 1;
+
+        std::vector<Function*> funcs;
+        std::string asmError;
+        if (!assembleFromText(mbsText, funcs, asmError)) {
+            fprintf(stderr, "error: %s\n", asmError.c_str());
+            return 1;
+        }
+
+        const char* outPath = nullptr;
+        for (int i = 3; i + 1 < argc; i++) {
+            if (strcmp(argv[i], "-o") == 0) {
+                outPath = argv[i + 1];
+                break;
+            }
+        }
+        if (!outPath) {
+            fprintf(stderr, "usage: %s -a input.mbs -o output.mbc\n", argv[0]);
+            return 1;
+        }
+
+        if (!Function::writeProgram(outPath, funcs)) {
+            fprintf(stderr, "error: failed to write '%s'\n", outPath);
+            return 1;
+        }
+        return 0;
+    }
+
     if (argc >= 3 && strcmp(argv[1], "-f") == 0) {
         std::string source = readFile(argv[2]);
         if (source.empty()) return 1;

@@ -25,6 +25,7 @@ public:
     Function* newFunction(const std::string& name, int arity = 0);
     void addFunction(Function* func);
     Function* getFunction(int index);
+    int functionCount() const { return (int)functions.size(); }
 
     // String interning
     std::string* internString(const std::string& s);
