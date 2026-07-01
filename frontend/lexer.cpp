@@ -53,7 +53,7 @@ void Lexer::skipComment() {
 }
 
 Token Lexer::string() {
-    char quote = advance();
+    char quote = source[start];
     while (!isAtEnd() && peek() != quote) {
         if (peek() == '\n') line++;
         else if (peek() == '\\') { advance(); }
@@ -101,15 +101,16 @@ TokenType Lexer::identifierType() {
         case 'd': return checkKeyword(1, 1, "o", TokenType::TK_DO);
         case 'e':
             if (current - start == 1) return TokenType::TK_NAME;
-            switch (source[start+1]) {
-                    case 'l': return checkKeyword(2, 2, "se", TokenType::TK_ELSE);
-                    case 'n': return checkKeyword(2, 2, "d", TokenType::TK_END);
+            if (source[start+1] == 'n') return checkKeyword(2, 1, "d", TokenType::TK_END);
+            if (source[start+1] == 'l') {
+                if (current - start == 4) return checkKeyword(2, 2, "se", TokenType::TK_ELSE);
+                if (current - start == 6) return checkKeyword(2, 4, "seif", TokenType::TK_ELSEIF);
             }
             break;
         case 'f':
             if (current - start > 1) {
                 switch (source[start+1]) {
-                        case 'a': return checkKeyword(2, 4, "lse", TokenType::TK_FALSE);
+                        case 'a': return checkKeyword(2, 3, "lse", TokenType::TK_FALSE);
                         case 'o': return checkKeyword(2, 1, "r", TokenType::TK_FOR);
                         case 'u': return checkKeyword(2, 6, "nction", TokenType::TK_FUNCTION);
                 }
@@ -124,14 +125,21 @@ TokenType Lexer::identifierType() {
             }
             break;
         case 'l': return checkKeyword(1, 4, "ocal", TokenType::TK_LOCAL);
-        case 'n': return checkKeyword(1, 2, "il", TokenType::TK_NIL);
+        case 'n':
+            if (current - start > 1) {
+                switch (source[start+1]) {
+                    case 'i': return checkKeyword(1, 2, "il", TokenType::TK_NIL);
+                    case 'o': return checkKeyword(1, 2, "ot", TokenType::TK_NOT);
+                }
+            }
+            break;
         case 'o': return checkKeyword(1, 1, "r", TokenType::TK_OR);
 
         case 't':
             if (current - start > 1) {
                 switch (source[start+1]) {
                         case 'h': return checkKeyword(2, 2, "en", TokenType::TK_THEN);
-                        case 'r': return checkKeyword(2, 3, "ue", TokenType::TK_TRUE);
+                        case 'r': return checkKeyword(2, 2, "ue", TokenType::TK_TRUE);
                 }
             }
             break;

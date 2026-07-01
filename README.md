@@ -43,4 +43,11 @@ frontend/            Lexer, Parser, AST, Compiler
 | 1     | Lexer, Parser, AST, Compiler | Compiles |
 | 2     | Variables, control flow | Pending |
 | 3     | Functions, closures | Pending |
+| 3.5   | Coroutines | Pending |
 | 4     | Tables | Pending |
+
+## Plans
+
+Implementation plans for upcoming features are in the [`plans/`](plans/) directory:
+- **Closures** — nested functions, upvalues, closure objects
+- **Coroutines** — cooperative multitasking, yield/resume

@@ -5,6 +5,11 @@
 
 Compiler::Compiler(VM& v) : vm(v) {}
 
+static bool isPrintCall(CallData* cd) {
+    return cd->callee->type == ExprType::NAME &&
+           strcmp(cd->callee->strVal, "print") == 0;
+}
+
 void Compiler::error(int line, const char* format, ...) {
     hadError_ = true;
     va_list args;
@@ -234,7 +239,11 @@ void Compiler::compileStmt(Stmt* stmt) {
         case StmtType::CALL: {
             auto d = (CallStmtData*)stmt->data;
             compileExpr(d->call);
-            emitOpcode(stmt->line, OP_POP);
+            // print() uses OP_PRINTLN which already pops; other calls
+            // need OP_POP to discard the return value on the stack.
+            if (d->call->type != ExprType::CALL ||
+                !isPrintCall((CallData*)d->call->data))
+                emitOpcode(stmt->line, OP_POP);
             break;
         }
 
@@ -318,6 +327,7 @@ void Compiler::compileExpr(Expr* expr) {
             TokenType op = d->op;
             if (op == TokenType::TK_AND || op == TokenType::TK_OR) {
                 compileExpr(d->lhs);
+                emitOpcode(expr->line, OP_DUP);
                 Opcode jumpOp = (op == TokenType::TK_AND) ? OP_JZ : OP_JNZ;
                 int j = emitJump(expr->line, jumpOp);
                 emitOpcode(expr->line, OP_POP);

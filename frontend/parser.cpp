@@ -4,6 +4,13 @@
 #include <cmath>
 #include <cstring>
 
+static char* copyStr(std::string_view sv) {
+    char* s = (char*)malloc(sv.size() + 1);
+    memcpy(s, sv.data(), sv.size());
+    s[sv.size()] = '\0';
+    return s;
+}
+
 Parser::Parser(const std::string& source) : lexer(source) {
     advance(); // load first token
 }
@@ -102,7 +109,7 @@ Stmt* Parser::statement() {
     }
     // Assignment
     if (e && e->type == ExprType::NAME && current.type == TokenType::TK_ASSIGN) {
-        const char* name = e->strVal;
+        const char* name = strdup(e->strVal);
         Expr::destroy(e);
         advance(); // consume =
         Expr* val = expression();
@@ -138,11 +145,6 @@ Stmt* Parser::statement() {
 Stmt* Parser::localDecl() {
     int line = previous.line;
     std::vector<const char*> names;
-    names.push_back(previous.start.data());
-    // Actually, match() already advanced past 'local'. Now we need names.
-    // But wait, 'local' was already consumed by statement(). Let me re-read...
-    // match(TK_LOCAL) returns true and advances. So previous is 'local'.
-    // Now we need to read the variable name(s)
     if (current.type != TokenType::TK_NAME) {
         consume(TokenType::TK_NAME, "expected variable name");
         return nullptr;
@@ -150,7 +152,7 @@ Stmt* Parser::localDecl() {
     names.clear();
     do {
         advance(); // consume name
-        names.push_back(previous.start.data());
+    names.push_back(copyStr(previous.start));
     } while (match(TokenType::TK_COMMA));
 
     std::vector<Expr*> inits;
@@ -347,7 +349,7 @@ Expr* Parser::callExpr() {
 
 Expr* Parser::prefixExpr() {
     if (match(TokenType::TK_NAME)) {
-        return Expr::makeName(previous.line, previous.start.data());
+        return Expr::makeName(previous.line, copyStr(previous.start));
     }
     if (match(TokenType::TK_LPAREN)) {
         Expr* e = expression();
@@ -368,7 +370,7 @@ Expr* Parser::primaryExpr() {
         return Expr::makeNum(previous.line, v);
     }
     if (match(TokenType::TK_STRING)) {
-        return Expr::makeStr(previous.line, std::string(previous.start).c_str());
+        return Expr::makeStr(previous.line, copyStr(previous.start));
     }
     if (match(TokenType::TK_FUNCTION)) {
         return funcDef();
@@ -386,7 +388,7 @@ Expr* Parser::funcDef() {
     if (!check(TokenType::TK_RPAREN)) {
         do {
             consume(TokenType::TK_NAME, "expected parameter name");
-            params.push_back(previous.start.data());
+            params.push_back(copyStr(previous.start));
         } while (match(TokenType::TK_COMMA));
     }
     consume(TokenType::TK_RPAREN, "expected ')'");

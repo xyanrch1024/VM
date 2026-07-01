@@ -70,33 +70,36 @@ Expr* Expr::makeFuncDef(int line, std::vector<const char*> params, Stmt* body) {
 
 void Expr::destroy(Expr* e) {
     if (!e) return;
-    if (e->data) {
-        switch (e->type) {
-            case ExprType::UNARY: {
-                auto d = (UnaryData*)e->data;
-                destroy(d->rhs); delete d;
-                break;
-            }
-            case ExprType::BINARY: {
-                auto d = (BinaryData*)e->data;
-                destroy(d->lhs); destroy(d->rhs); delete d;
-                break;
-            }
-            case ExprType::CALL: {
-                auto d = (CallData*)e->data;
-                destroy(d->callee);
-                for (auto a : d->args) destroy(a);
-                delete d;
-                break;
-            }
-            case ExprType::FUNCDEF: {
-                auto d = (FuncDefData*)e->data;
-                Stmt::destroy(d->body);
-                delete d;
-                break;
-            }
-            default: break;
+    switch (e->type) {
+        case ExprType::STRING:
+        case ExprType::NAME:
+            ::free((void*)e->strVal);
+            break;
+        case ExprType::UNARY: {
+            auto d = (UnaryData*)e->data;
+            destroy(d->rhs); delete d;
+            break;
         }
+        case ExprType::BINARY: {
+            auto d = (BinaryData*)e->data;
+            destroy(d->lhs); destroy(d->rhs); delete d;
+            break;
+        }
+        case ExprType::CALL: {
+            auto d = (CallData*)e->data;
+            destroy(d->callee);
+            for (auto a : d->args) destroy(a);
+            delete d;
+            break;
+        }
+        case ExprType::FUNCDEF: {
+            auto d = (FuncDefData*)e->data;
+            for (auto p : d->params) ::free((void*)p);
+            Stmt::destroy(d->body);
+            delete d;
+            break;
+        }
+        default: break;
     }
     ::free(e);
 }
@@ -186,11 +189,13 @@ void Stmt::destroy(Stmt* s) {
             }
             case StmtType::LOCAL_DECL: {
                 auto d = (LocalDeclData*)s->data;
+                for (auto n : d->names) ::free((void*)n);
                 for (auto i : d->inits) Expr::destroy(i);
                 delete d; break;
             }
             case StmtType::ASSIGN: {
                 auto d = (AssignData*)s->data;
+                ::free((void*)d->name);
                 Expr::destroy(d->value);
                 delete d; break;
             }
