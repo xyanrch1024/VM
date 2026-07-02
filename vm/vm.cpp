@@ -4,6 +4,7 @@
 #include <cstdarg>
 #include <cmath>
 #include <cstdlib>
+#include <iostream>
 
 VM::VM() { stack.reserve(65536); resetStack(); }
 VM::~VM() {
@@ -546,6 +547,14 @@ VM::Result VM::interpret(Function* func) {
             }
 
             // === I/O ===
+            case OP_READ: {
+                std::string line;
+                if (std::getline(std::cin, line))
+                    push(Value::makeStr(internString(line)));
+                else
+                    push(Value::nil());
+                break;
+            }
             case OP_PRINT:   { peek().print(); break; }
             case OP_PRINTLN: { pop().print(); printf("\n"); break; }
 

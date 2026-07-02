@@ -62,6 +62,7 @@ enum Opcode : uint8_t {
     OP_TYPE,
 
     // I/O
+    OP_READ,
     OP_PRINT,
     OP_PRINTLN,
 

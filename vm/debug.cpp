@@ -106,6 +106,7 @@ int disassembleInstruction(const Chunk& chunk, int offset) {
         case OP_TABLE_GET:      return simpleInstruction("OP_TABLE_GET", offset);
         case OP_TABLE_SET:      return simpleInstruction("OP_TABLE_SET", offset);
         case OP_TYPE:           return simpleInstruction("OP_TYPE", offset);
+        case OP_READ:           return simpleInstruction("OP_READ", offset);
         case OP_PRINT:          return simpleInstruction("OP_PRINT", offset);
         case OP_PRINTLN:        return simpleInstruction("OP_PRINTLN", offset);
         case OP_HALT:           return simpleInstruction("OP_HALT", offset);

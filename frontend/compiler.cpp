@@ -430,6 +430,14 @@ void Compiler::compileExpr(Expr* expr) {
                     emitOpcode(expr->line, OP_PRINTLN);
                     break;
                 }
+                if (strcmp(calleeName, "read") == 0) {
+                    if (d->args.size() != 0) {
+                        error(expr->line, "read() takes no arguments");
+                        break;
+                    }
+                    emitOpcode(expr->line, OP_READ);
+                    break;
+                }
                 if (strcmp(calleeName, "type") == 0) {
                     if (d->args.size() != 1) {
                         error(expr->line, "type() requires exactly one argument");
