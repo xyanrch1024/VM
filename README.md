@@ -1,6 +1,6 @@
-# MiniLua VM
+# kai VM
 
-A stack-based bytecode virtual machine for **MiniLua**, a Lua-like scripting language, written in C++17.
+A stack-based bytecode virtual machine for **kai**, a Lua-like scripting language, written in C++17.
 
 ## Build
 
@@ -13,7 +13,7 @@ cmake --build build
 
 ```bash
 ./build/vm                    # REPL
-./build/vm -f script.lua      # run file
+./build/vm -f script.kai      # run file
 ./build/vm -e 'print(1+2)'    # inline code
 ./build/vm -b testname        # run Builder test
 ```
@@ -25,7 +25,7 @@ vm/                  VM core (bytecodes, interpreter, value types)
 frontend/            Lexer, Parser, AST, Compiler
 ```
 
-- **Lexer** — tokenizer for MiniLua syntax
+- **Lexer** — tokenizer for kai syntax
 - **Parser** — recursive-descent parser → AST
 - **Compiler** — AST → bytecode for stack VM
 - **VM** — bytecode interpreter with 40 opcodes

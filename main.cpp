@@ -420,7 +420,7 @@ static void testFibonacci() {
 }
 
 // ============================================================
-// Compile and execute a MiniLua source string
+// Compile and execute a kai source string
 // ============================================================
 static void runSource(const std::string& source, VM& vm) {
     Parser parser(source);
@@ -510,7 +510,7 @@ static int runBytecode(const char* bcPath) {
 // main
 // ============================================================
 int main(int argc, char** argv) {
-    // Compile source to bytecode: -c input.lua -o output.mbc
+    // Compile source to bytecode: -c input.kai -o output.mbc
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
         const char* srcPath = argv[2];
         const char* outPath = nullptr;
@@ -521,7 +521,7 @@ int main(int argc, char** argv) {
             }
         }
         if (!outPath) {
-            fprintf(stderr, "usage: %s -c input.lua -o output.mbc\n", argv[0]);
+            fprintf(stderr, "usage: %s -c input.kai -o output.mbc\n", argv[0]);
             return 1;
         }
         return compileToBytecode(srcPath, outPath) ? 0 : 1;
@@ -556,7 +556,7 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // Compile source to .mbs text: -S input.lua -o output.mbs
+    // Compile source to .mbs text: -S input.kai -o output.mbs
     if (argc >= 3 && strcmp(argv[1], "-S") == 0) {
         std::string source = readFile(argv[2]);
         if (source.empty()) return 1;
@@ -663,7 +663,7 @@ int main(int argc, char** argv) {
 
     // Default: REPL
     if (argc == 1) {
-        printf("MiniLua REPL (type 'exit' to quit)\n");
+        printf("kai REPL (type 'exit' to quit)\n");
         VM vm;
         std::string line;
         for (;;) {

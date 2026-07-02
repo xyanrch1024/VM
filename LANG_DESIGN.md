@@ -2,9 +2,9 @@
 
 ## 1. 语言概览
 
-**语言名**: MiniLua
+**语言名**: kai
 
-MiniLua 是 Lua 的一个精简方言, 基于现有的栈式虚拟机。保留 Lua 的核心哲学——简约、灵活、嵌入友好。
+kai 是 Lua 的一个精简方言, 基于现有的栈式虚拟机。保留 Lua 的核心哲学——简约、灵活、嵌入友好。
 
 ### 设计目标
 
@@ -15,7 +15,7 @@ MiniLua 是 Lua 的一个精简方言, 基于现有的栈式虚拟机。保留 L
 
 ### 与标准 Lua 的差异
 
-| 特性 | Lua | MiniLua |
+| 特性 | Lua | kai |
 |------|-----|---------|
 | 返回值 | 多返回值 | 单返回值 |
 | 全局变量 | 默认全局 | 仅 `local` |
@@ -484,7 +484,7 @@ struct Table {
 
 ### 内置函数
 
-MiniLua 预置以下全局函数 (通过编译器在顶层作用域注入):
+kai 预置以下全局函数 (通过编译器在顶层作用域注入):
 
 | 函数 | 实现 | 说明 |
 |------|------|------|
@@ -530,7 +530,7 @@ vm/
 - 集成测试: `print(1 + 2 * 3)`
 
 **测试用例**:
-```lua
+```kai
 print(1 + 2 * 3)         -- 7
 print(3.14 * 2 + 1)      -- 7.28
 print(2 ^ 10)            -- 1024
@@ -550,7 +550,7 @@ print(not false)         -- true
 - 短路逻辑 (and/or)
 
 **测试用例**:
-```lua
+```kai
 local a = 10
 local b = 20
 print(a + b)             -- 30
@@ -580,7 +580,7 @@ print(sum)               -- 55
 - OP_CLOSURE + upvalue 支持
 
 **测试用例**:
-```lua
+```kai
 function fact(n)
   if n <= 1 then
     return 1
@@ -607,7 +607,7 @@ print(fib(10))           -- 55
 - 内置函数 `type()`, `tostring()`
 
 **测试用例**:
-```lua
+```kai
 local t = {}
 t["name"] = "Alice"
 t["age"] = 30
@@ -623,7 +623,7 @@ print(t2.x)              -- 10
 
 ### 输入
 
-```lua
+```kai
 function fact(n)
   if n <= 1 then return 1 end
   return n * fact(n - 1)
@@ -699,15 +699,15 @@ print(fact(5))
 
 ## 11. 测试策略
 
-每个 Phase 使用 `.lua` 测试文件 + 预期输出:
+每个 Phase 使用 `.kai` 测试文件 + 预期输出:
 
 ```bash
 # 运行测试
-./build/minilua tests/arithmetic.lua
+./build/vm tests/arithmetic.kai
 # 期望输出: 7
 
 # 对比测试
-./build/minilua tests/if.lua > /tmp/out
+./build/vm tests/if.kai > /tmp/out
 diff /tmp/out tests/if.expected
 ```
 
@@ -715,13 +715,13 @@ diff /tmp/out tests/if.expected
 ```
 vm/
 ├── tests/
-│   ├── arithmetic.lua
-│   ├── variables.lua
-│   ├── if.lua
-│   ├── while.lua
-│   ├── for.lua
-│   ├── function.lua
-│   ├── recursion.lua
-│   ├── table.lua
+│   ├── arithmetic.kai
+│   ├── variables.kai
+│   ├── if.kai
+│   ├── while.kai
+│   ├── for.kai
+│   ├── function.kai
+│   ├── recursion.kai
+│   ├── table.kai
 │   └── ...
 ```

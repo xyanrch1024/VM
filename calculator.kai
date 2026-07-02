@@ -1,4 +1,4 @@
--- Closure-based calculator demo for MiniLua
+-- Closure-based calculator demo for kai
 -- Uses first-class functions with upvalues
 
 local function makeBinOp(op)

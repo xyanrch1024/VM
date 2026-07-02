@@ -57,7 +57,7 @@ struct Coroutine {
 
 ### 2.4 API Surface
 
-```lua
+```kai
 local co = coroutine.create(function()
   coroutine.yield(42)
   return "done"
@@ -515,7 +515,7 @@ if (match(TK_DOT)) {
 }
 ```
 
-Or, simpler: register `coroutine` as a local variable (a table) and `create`/`resume`/`yield`/`status` as method-like accesses. Since MiniLua doesn't have tables yet, the simplest approach is to handle `NAME DOT NAME LPAREN ... RPAREN` as a special call syntax in the parser, producing a CALL node where the callee is a dotted name.
+Or, simpler: register `coroutine` as a local variable (a table) and `create`/`resume`/`yield`/`status` as method-like accesses. Since kai doesn't have tables yet, the simplest approach is to handle `NAME DOT NAME LPAREN ... RPAREN` as a special call syntax in the parser, producing a CALL node where the callee is a dotted name.
 
 Actually, the simplest approach for Phase 3.5: treat `coroutine.create` as a single identifier at the lexer level? No, that's hacky.
 
@@ -567,7 +567,7 @@ Result VM::interpret(Function* func) {
 
 ### 8.2 Attempting to Yield from Main
 
-```lua
+```kai
 coroutine.yield(42)  -- error: cannot yield from main thread
 ```
 
@@ -575,7 +575,7 @@ Handled by the runtime error check in `OP_YIELD`: `if (!activeCoroutine) runtime
 
 ### 8.3 Attempting to Resume Dead Coroutine
 
-```lua
+```kai
 local co = coroutine.create(function() end)
 coroutine.resume(co)   -- true
 coroutine.resume(co)   -- false, "cannot resume dead coroutine"
@@ -661,7 +661,7 @@ This ensures only one copy of the stack data exists at any time (zero-copy conte
 
 Coroutines work naturally with closures. When a coroutine wraps a closure:
 
-```lua
+```kai
 function makeCounter()
     local count = 0
     return function()
@@ -723,7 +723,7 @@ Initial:
 
 2. **What happens if a coroutine's closure has upvalues that close during yield?** If the coroutine's function (not the closure) returns, upvalues are closed as normal. The coroutine transitions to DEAD.
 
-3. **Should `coroutine.resume()` pass all extra args as yield return values, or just the first?** All extra args become yield's return values. MiniLua is single-return, so only the first is accessible via `val = yield()`, but the resumer can inspect via ... (if added later).
+3. **Should `coroutine.resume()` pass all extra args as yield return values, or just the first?** All extra args become yield's return values. kai is single-return, so only the first is accessible via `val = yield()`, but the resumer can inspect via ... (if added later).
 
 4. **Stack size limits?** No hard limit. Each coroutine's stack grows on demand. A deeply recursive coroutine may run out of memory.
 

@@ -1,4 +1,4 @@
-# AGENTS.md — MiniLua VM
+# AGENTS.md — kai VM
 
 ## Build & Run
 
@@ -6,11 +6,11 @@
 cmake -S . -B build
 cmake --build build
 ./build/vm                    # REPL
-./build/vm -f script.lua      # run file
+./build/vm -f script.kai      # run file
 ./build/vm -e 'print(1+2)'    # inline code
-./build/vm -c in.lua -o out.mbc  # compile source to bytecode file
+./build/vm -c in.kai -o out.mbc  # compile source to bytecode file
 ./build/vm -x out.mbc         # execute bytecode file
-./build/vm -S in.lua -o out.mbs  # compile source to .mbs text format
+./build/vm -S in.kai -o out.mbs  # compile source to .mbs text format
 ./build/vm -a in.mbs -o out.mbc  # assemble .mbs text to .mbc binary
 ./build/vm -d file.mbc [-o out.mbs]  # disassemble .mbc to .mbs text
 ./build/vm -b testname        # run single Builder test (13 available)
@@ -49,7 +49,7 @@ source → Lexer → tokens → Parser → AST → Compiler → bytecode (Chunk)
 
 Two testing modes:
 - **Builder tests** (main.cpp:13-419): Construct bytecode directly via `Builder` fluent API, bypassing the frontend. All 13 currently passing.
-- **Source tests**: Parse + compile MiniLua source, then interpret. Used by CLI (`-f`, `-e`, REPL).
+- **Source tests**: Parse + compile kai source, then interpret. Used by CLI (`-f`, `-e`, REPL).
 
 ## Key Gotchas
 
@@ -59,7 +59,7 @@ Two testing modes:
 
 - **All variables must be declared with `local`**. There are no global variables. Referencing an undeclared variable is a compile-time error.
 
-- **Single return values only.** Unlike Lua's multiple returns, MiniLua only supports single return values.
+- **Single return values only.** Unlike Lua's multiple returns, kai only supports single return values.
 
 - **String ownership is tricky.** Two ownership models coexist:
   - Chunk destructor deletes `STRING` values in `constants` (strings are `new`-allocated there).

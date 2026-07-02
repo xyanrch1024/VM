@@ -321,7 +321,7 @@ For now, no GC. Closures and upvalues leak when no longer reachable. Acceptable 
 
 ### 7.1 Shared Upvalues
 
-```lua
+```kai
 function f()
   local x = 0
   local a = function() x = x + 1 end
@@ -337,7 +337,7 @@ Both closures `a` and `b` share the same `x` upvalue. When `f()` returns, `x` is
 
 ### 7.2 Deep Nesting
 
-```lua
+```kai
 function f()
   local x = 10
   function g()
@@ -364,7 +364,7 @@ Already handled by the close-upvalues mechanism. The `closedValue` preserves the
 
 ### 7.4 Upvalues Capturing Loop Variables
 
-```lua
+```kai
 local funcs = {}
 for i = 1, 3 do
   funcs[i] = function() print(i) end
@@ -372,7 +372,7 @@ end
 funcs[1]()  -- prints 4 (or 1?) depending on semantics
 ```
 
-In Lua 5.1, this prints 4 (i is a single variable, mutated by loop). In Lua 5.2+, each iteration gets its own i. For MiniLua, start with Lua 5.1 semantics (single i, last value). The for-loop compiler must emit OP_CLOSURE after the loop body to capture the current i value before it changes on the next iteration.
+In Lua 5.1, this prints 4 (i is a single variable, mutated by loop). In Lua 5.2+, each iteration gets its own i. For kai, start with Lua 5.1 semantics (single i, last value). The for-loop compiler must emit OP_CLOSURE after the loop body to capture the current i value before it changes on the next iteration.
 
 ---
 
@@ -448,7 +448,7 @@ In Lua 5.1, this prints 4 (i is a single variable, mutated by loop). In Lua 5.2+
    };
    ```
 
-3. **Multiple return values**: Not an issue since MiniLua uses single return values.
+3. **Multiple return values**: Not an issue since kai uses single return values.
 
 4. **Circular references**: Closures capturing themselves (e.g., recursive closures stored in upvalues). Won't cause issues in a non-GC world (just leaks).
 
