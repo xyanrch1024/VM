@@ -6,8 +6,11 @@
 #include <unordered_map>
 #include <memory>
 
+struct ObjUpvalue;
+
 struct CallFrame {
     Function* function = nullptr;
+    ObjClosure* closure = nullptr;
     int pc = 0;
     int fp = 0; // stack index of frame base
 };
@@ -63,6 +66,11 @@ private:
     void markObj(Obj* obj);
     void sweep();
     void freeObj(Obj* obj);
+
+    // Upvalues (open upvalues list)
+    ObjUpvalue* openUpvalues = nullptr;
+    ObjUpvalue* captureUpvalue(Value* local);
+    void closeUpvalues(Value* fp);
 
     // Current execution context
     CallFrame* frame() { return &frames.back(); }

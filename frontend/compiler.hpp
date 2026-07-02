@@ -15,6 +15,7 @@ struct LocalVar {
 struct Upvalue {
     int index;      // index in enclosing function's locals/upvalues
     bool isLocal;   // true if it's a local in enclosing function
+    const char* name;
 };
 
 class Compiler {
@@ -26,6 +27,7 @@ public:
 private:
     struct CompileState {
         Function* function;
+        CompileState* enclosing = nullptr;
         std::vector<LocalVar> locals;
         std::vector<Upvalue> upvalues;
         int scopeDepth = 0;
@@ -33,10 +35,10 @@ private:
     };
 
     VM& vm;
-    std::vector<CompileState> stateStack;
+    CompileState* current = nullptr;
     bool hadError_ = false;
 
-    CompileState& curr() { return stateStack.back(); }
+    CompileState& curr() { return *current; }
 
     void error(int line, const char* format, ...);
 

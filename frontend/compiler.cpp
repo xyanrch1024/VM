@@ -103,16 +103,28 @@ int Compiler::addUpvalue(int index, bool isLocal) {
     Upvalue uv;
     uv.index = index;
     uv.isLocal = isLocal;
+    uv.name = nullptr; // set by caller if needed
     curr().upvalues.push_back(uv);
     return (int)curr().upvalues.size() - 1;
 }
 
 int Compiler::resolveUpvalue(const char* name) {
-    if (stateStack.size() < 2) return -1;
-    auto& enc = stateStack[stateStack.size() - 2];
-    for (int i = (int)enc.locals.size() - 1; i >= 0; i--) {
-        if (enc.locals[i].name && strcmp(enc.locals[i].name, name) == 0) {
-            return addUpvalue(i, true);
+    if (!current->enclosing) return -1;
+    // Look in immediately enclosing function's locals
+    auto* enc = current->enclosing;
+    for (int i = (int)enc->locals.size() - 1; i >= 0; i--) {
+        if (enc->locals[i].name && strcmp(enc->locals[i].name, name) == 0) {
+            int idx = addUpvalue(i, true);
+            curr().upvalues[idx].name = name;
+            return idx;
+        }
+    }
+    // Recursively search enclosing function's upvalues
+    for (int i = 0; i < (int)enc->upvalues.size(); i++) {
+        if (enc->upvalues[i].name && strcmp(enc->upvalues[i].name, name) == 0) {
+            int idx = addUpvalue(i, false);
+            curr().upvalues[idx].name = name;
+            return idx;
         }
     }
     return -1;
@@ -131,11 +143,12 @@ void Compiler::popScope() {
 
 Function* Compiler::enterFunction(const char* name, int arity) {
     Function* func = vm.newFunction(name, arity);
-    CompileState state;
-    state.function = func;
-    state.scopeDepth = 0;
-    state.numLocals = 0;
-    stateStack.push_back(state);
+    auto* state = new CompileState();
+    state->function = func;
+    state->enclosing = current;
+    state->scopeDepth = 0;
+    state->numLocals = 0;
+    current = state;
     return func;
 }
 
@@ -143,7 +156,9 @@ Function* Compiler::leaveFunction() {
     emitReturn(0);
     Function* func = curr().function;
     func->numLocals = curr().numLocals;
-    stateStack.pop_back();
+    auto* old = current;
+    current = current->enclosing;
+    delete old;
     return func;
 }
 
@@ -163,18 +178,43 @@ void Compiler::compileStmt(Stmt* stmt) {
         case StmtType::LOCAL_DECL: {
             auto d = (LocalDeclData*)stmt->data;
             for (size_t i = 0; i < d->inits.size(); i++) {
-                compileExpr(d->inits[i]);
+                // If init is a function definition, register the local
+                // first so the function body can reference itself recursively
+                if (d->inits[i]->type == ExprType::FUNCDEF) {
+                    int slot = addLocal(d->names[i]);
+                    compileExpr(d->inits[i]);
+                    if (slot < 4) {
+                        emitOpcode(stmt->line, (Opcode)(OP_STORE_0 + slot));
+                    } else {
+                        emitOpcode(stmt->line, OP_STORE);
+                        emitByte((uint8_t)slot);
+                    }
+                    emitOpcode(stmt->line, OP_POP);
+                } else {
+                    compileExpr(d->inits[i]);
+                }
             }
             for (size_t i = 0; i < d->names.size(); i++) {
-                if (i >= d->inits.size()) emitOpcode(stmt->line, OP_NIL);
-                int slot = addLocal(d->names[i]);
-                if (slot < 4) {
-                    emitOpcode(stmt->line, (Opcode)(OP_STORE_0 + slot));
-                } else {
-                    emitOpcode(stmt->line, OP_STORE);
-                    emitByte((uint8_t)slot);
+                if (i >= d->inits.size()) {
+                    emitOpcode(stmt->line, OP_NIL);
+                    int slot = addLocal(d->names[i]);
+                    if (slot < 4) {
+                        emitOpcode(stmt->line, (Opcode)(OP_STORE_0 + slot));
+                    } else {
+                        emitOpcode(stmt->line, OP_STORE);
+                        emitByte((uint8_t)slot);
+                    }
+                    emitOpcode(stmt->line, OP_POP);
+                } else if (d->inits[i]->type != ExprType::FUNCDEF) {
+                    int slot = addLocal(d->names[i]);
+                    if (slot < 4) {
+                        emitOpcode(stmt->line, (Opcode)(OP_STORE_0 + slot));
+                    } else {
+                        emitOpcode(stmt->line, OP_STORE);
+                        emitByte((uint8_t)slot);
+                    }
+                    emitOpcode(stmt->line, OP_POP);
                 }
-                emitOpcode(stmt->line, OP_POP);
             }
             break;
         }
@@ -183,14 +223,24 @@ void Compiler::compileStmt(Stmt* stmt) {
             auto d = (AssignData*)stmt->data;
             compileExpr(d->value);
             int slot = resolveLocal(d->name);
-            if (slot < 0) { error(stmt->line, "undefined variable '%s'", d->name); return; }
-            if (slot < 4) {
-                emitOpcode(stmt->line, (Opcode)(OP_STORE_0 + slot));
-            } else {
-                emitOpcode(stmt->line, OP_STORE);
-                emitByte((uint8_t)slot);
+            if (slot >= 0) {
+                if (slot < 4) {
+                    emitOpcode(stmt->line, (Opcode)(OP_STORE_0 + slot));
+                } else {
+                    emitOpcode(stmt->line, OP_STORE);
+                    emitByte((uint8_t)slot);
+                }
+                emitOpcode(stmt->line, OP_POP);
+                break;
             }
-            emitOpcode(stmt->line, OP_POP);
+            int uvIdx = resolveUpvalue(d->name);
+            if (uvIdx >= 0) {
+                emitOpcode(stmt->line, OP_SET_UPVALUE);
+                emitByte((uint8_t)uvIdx);
+                emitOpcode(stmt->line, OP_POP);
+                break;
+            }
+            error(stmt->line, "undefined variable '%s'", d->name);
             break;
         }
 
@@ -313,9 +363,15 @@ void Compiler::compileExpr(Expr* expr) {
                     emitOpcode(expr->line, OP_LOAD);
                     emitByte((uint8_t)slot);
                 }
-            } else {
-                error(expr->line, "undefined variable '%s'", name);
+                break;
             }
+            int uvIdx = resolveUpvalue(name);
+            if (uvIdx >= 0) {
+                emitOpcode(expr->line, OP_GET_UPVALUE);
+                emitByte((uint8_t)uvIdx);
+                break;
+            }
+            error(expr->line, "undefined variable '%s'", name);
             break;
         }
 
@@ -385,15 +441,22 @@ void Compiler::compileExpr(Expr* expr) {
                 }
 
                 int slot = resolveLocal(calleeName);
-                if (slot < 0) {
-                    error(expr->line, "undefined function '%s'", calleeName);
-                    break;
-                }
-                if (slot < 4)
-                    emitOpcode(expr->line, (Opcode)(OP_LOAD_0 + slot));
-                else {
-                    emitOpcode(expr->line, OP_LOAD);
-                    emitByte((uint8_t)slot);
+                if (slot >= 0) {
+                    if (slot < 4)
+                        emitOpcode(expr->line, (Opcode)(OP_LOAD_0 + slot));
+                    else {
+                        emitOpcode(expr->line, OP_LOAD);
+                        emitByte((uint8_t)slot);
+                    }
+                } else {
+                    int uvIdx = resolveUpvalue(calleeName);
+                    if (uvIdx >= 0) {
+                        emitOpcode(expr->line, OP_GET_UPVALUE);
+                        emitByte((uint8_t)uvIdx);
+                    } else {
+                        error(expr->line, "undefined function '%s'", calleeName);
+                        break;
+                    }
                 }
                 emitOpcode(expr->line, OP_CALL);
                 emitByte((uint8_t)d->args.size());
@@ -428,12 +491,21 @@ void Compiler::compileExpr(Expr* expr) {
             Function* func = enterFunction("anonymous", (int)d->params.size());
             for (auto p : d->params) addLocal(p);
             if (d->body) compileBlock(d->body);
+            // Save upvalues before leaving — they belong to the child
+            std::vector<Upvalue> savedUpvalues = std::move(curr().upvalues);
             leaveFunction();
             int funcIdx = -1;
             for (int i = 0; i < vm.functionCount(); i++) {
                 if (vm.getFunction(i) == func) { funcIdx = i; break; }
             }
-            emitConstant(expr->line, Value::makeInt(funcIdx));
+            emitOpcode(expr->line, OP_CLOSURE);
+            emitByte((uint8_t)(funcIdx & 0xFF));
+            emitByte((uint8_t)((funcIdx >> 8) & 0xFF));
+            emitByte((uint8_t)savedUpvalues.size());
+            for (auto& uv : savedUpvalues) {
+                uint8_t desc = (uv.isLocal ? 0x80 : 0) | (uint8_t)(uv.index & 0x7F);
+                emitByte(desc);
+            }
             break;
         }
     }
@@ -443,13 +515,13 @@ void Compiler::compileExpr(Expr* expr) {
 
 Function* Compiler::compile(const std::vector<Stmt*>& stmts, const char* name) {
     hadError_ = false;
-    stateStack.clear();
 
-    CompileState state;
-    state.function = vm.newFunction(name, 0);
-    state.scopeDepth = 0;
-    state.numLocals = 0;
-    stateStack.push_back(state);
+    auto* state = new CompileState();
+    state->function = vm.newFunction(name, 0);
+    state->enclosing = nullptr;
+    state->scopeDepth = 0;
+    state->numLocals = 0;
+    current = state;
 
     // Register "print" as a built-in local (slot 0)
     addLocal("print");
@@ -460,6 +532,8 @@ Function* Compiler::compile(const std::vector<Stmt*>& stmts, const char* name) {
 
     emitOpcode(0, OP_HALT);
     curr().function->numLocals = curr().numLocals;
-    stateStack.pop_back();
-    return state.function;
+    Function* result = curr().function;
+    delete current;
+    current = nullptr;
+    return result;
 }

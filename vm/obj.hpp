@@ -62,6 +62,7 @@ struct ObjClosure : Obj {
 struct ObjUpvalue : Obj {
     Value* location = nullptr;
     Value closedValue;
+    ObjUpvalue* nextOpen = nullptr;
 
     ObjUpvalue() { type = ObjType::UPVALUE; }
 };

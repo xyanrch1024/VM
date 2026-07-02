@@ -98,9 +98,20 @@ No test framework — tests are raw C functions with manual printf-assertion.
 
 CMake registers a single `smoke` test: `ctest` just runs the binary with no arguments (which runs all tests).
 
+## Closure Implementation
+
+Closures are fully implemented:
+
+- **Opcodes**: `OP_CLOSURE` (variable-length: funcIdx:u16 + uvCount:u8 + uvDesc:u8×uvCount), `OP_GET_UPVALUE` (BYTE), `OP_SET_UPVALUE` (BYTE)
+- **VM**: `ObjClosure* closure` in `CallFrame`; `openUpvalues` linked list; `captureUpvalue()`/`closeUpvalues()`; `OP_CALL` pops `ObjClosure*` (no longer int funcIdx); `OP_CLOSURE` captures open upvalues via `captureUpvalue(isLocal ? &stack[fp+idx] : frame()->closure->upvalues[idx])`; `OP_RET` calls `closeUpvalues()` before popping frame
+- **Compiler**: `CompileState` uses linked list (`enclosing` pointer, heap-allocated, deleted on `leaveFunction()`); `Upvalue` has `name` field for recursive resolution; `resolveUpvalue()` searches enclosing locals then upvalues recursively; `compileExpr(NAME)` tries `resolveUpvalue` after `resolveLocal`; `compileExpr(CALL)` does the same for callees; `compileExpr(FUNCDEF)` saves upvalues before `leaveFunction()`, emits `OP_CLOSURE`; `compileStmt(ASSIGN)` handles upvalue targets via `OP_SET_UPVALUE`; `compileStmt(LOCAL_DECL)` detects FUNCDEF init and registers local first (for recursion)
+- **Parser**: `localDecl()` handles `local function name(...) body end` → `local name = function(...) body end`
+- **Stack stability**: `stack.reserve(65536)` in VM constructor prevents `std::vector` reallocation that would invalidate upvalue `Value* location` pointers
+
+Known limitation: `function name()...end` (without `local`) desugars to `name = function()...end` but requires `name` to be an existing local — no global variables exist.
+
 ## Upcoming Features
 
 Plans in `plans/`:
-- **GC** — tri-color mark-and-sweep collector (Phase 1: infrastructure, Phase 2: GC strings). Required for closures/tables.
-- **Closures** — nested functions, upvalues, closure objects. Compiler already has `Upvalue` struct, `addUpvalue()`, `resolveUpvalue()`.
-- **Coroutines** — cooperative multitasking, yield/resume.
+- **GC Phase 2** — migrate strings to `ObjString`, remove RAII ownership from Chunk dtor, update Builder/Assembler to allocate through VM
+- **Coroutines** — `OP_CREATE_COROUTINE`, `OP_RESUME`, `OP_YIELD`, `OP_COROUTINE_STATUS`

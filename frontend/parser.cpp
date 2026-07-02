@@ -161,6 +161,19 @@ Stmt* Parser::statement() {
 
 Stmt* Parser::localDecl() {
     int line = previous.line;
+
+    // local function name(params) body end
+    // desugar: local name = function(params) body end
+    if (match(TokenType::TK_FUNCTION)) {
+        consume(TokenType::TK_NAME, "expected function name");
+        const char* name = copyStr(previous.start);
+        int funcLine = previous.line;
+        Expr* func = funcDef();
+        std::vector<const char*> names = {name};
+        std::vector<Expr*> inits = {func};
+        return Stmt::makeLocalDecl(funcLine, names, inits);
+    }
+
     std::vector<const char*> names;
     if (current.type != TokenType::TK_NAME) {
         consume(TokenType::TK_NAME, "expected variable name");

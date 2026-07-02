@@ -48,6 +48,9 @@ enum Opcode : uint8_t {
     // Functions
     OP_CALL,
     OP_RET,
+    OP_CLOSURE,
+    OP_GET_UPVALUE,
+    OP_SET_UPVALUE,
 
     // Objects
     OP_NEW_TUPLE,

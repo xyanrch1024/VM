@@ -126,9 +126,12 @@ static int insnSize(uint8_t op) {
         case OP_NEW_TABLE: case OP_TABLE_GET: case OP_TABLE_SET: case OP_TYPE:
             return 1;
         case OP_CONSTANT: case OP_LOAD: case OP_STORE: case OP_CALL: case OP_NEW_TUPLE:
+        case OP_GET_UPVALUE: case OP_SET_UPVALUE:
             return 2;
         case OP_CONSTANT_LONG: case OP_JMP: case OP_JZ: case OP_JNZ: case OP_LOOP:
             return 3;
+        case OP_CLOSURE:
+            return -1; // variable length
         default:
             return 1;
     }
@@ -182,6 +185,9 @@ static const char* opcodeMnemonic(uint8_t op) {
         case OP_LOOP:           return "loop";
         case OP_CALL:           return "call";
         case OP_RET:            return "ret";
+        case OP_CLOSURE:        return "closure";
+        case OP_GET_UPVALUE:    return "get_upvalue";
+        case OP_SET_UPVALUE:    return "set_upvalue";
         case OP_NEW_TUPLE:      return "new_tuple";
         case OP_NEW_TABLE:      return "new_table";
         case OP_TABLE_GET:      return "table_get";
@@ -202,6 +208,8 @@ static OperandType opcodeOperand(uint8_t op) {
         case OP_STORE:          return OperandType::BYTE;
         case OP_CALL:           return OperandType::BYTE;
         case OP_NEW_TUPLE:      return OperandType::BYTE;
+        case OP_GET_UPVALUE:    return OperandType::BYTE;
+        case OP_SET_UPVALUE:    return OperandType::BYTE;
         case OP_JMP:            return OperandType::LABEL;
         case OP_JZ:             return OperandType::LABEL;
         case OP_JNZ:            return OperandType::LABEL;
@@ -232,6 +240,8 @@ static int lookupMnemonic(const std::string& name) {
         {"not", OP_NOT},
         {"jmp", OP_JMP}, {"jz", OP_JZ}, {"jnz", OP_JNZ}, {"loop", OP_LOOP},
         {"call", OP_CALL}, {"ret", OP_RET},
+        {"closure", OP_CLOSURE},
+        {"get_upvalue", OP_GET_UPVALUE}, {"set_upvalue", OP_SET_UPVALUE},
         {"new_tuple", OP_NEW_TUPLE},
         {"new_table", OP_NEW_TABLE}, {"table_get", OP_TABLE_GET},
         {"table_set", OP_TABLE_SET}, {"type", OP_TYPE},
@@ -349,8 +359,17 @@ std::string disassembleToText(const Function& func) {
             out << " " << (l.empty() ? "???" : l);
         }
 
-        out << "\n";
-        offset += insnSize(op);
+        if (op == OP_CLOSURE) {
+            int funcIdx = func.chunk.code[offset+1] | (func.chunk.code[offset+2] << 8);
+            int uvCount = func.chunk.code[offset+3];
+            out << " " << funcIdx << " " << uvCount;
+            for (int i = 0; i < uvCount; i++) {
+                out << " " << (int)func.chunk.code[offset+4+i];
+            }
+            offset += 4 + uvCount;
+        } else {
+            offset += insnSize(op);
+        }
     }
 
     out << ".end\n";
@@ -589,7 +608,14 @@ bool assembleFromText(const std::string& text, std::vector<Function*>& outFuncs,
                 OperandType ot = opcodeOperand((uint8_t)op);
                 int size = insnSize((uint8_t)op);
 
-                if (ot == OperandType::LABEL) {
+                if (op == OP_CLOSURE) {
+                    if (al.args.size() < 2) {
+                        delete func;
+                        outError = "closure requires at least 2 operands (funcIdx, uvCount)";
+                        return false;
+                    }
+                    size = 4 + (int)strtol(al.args[1].c_str(), nullptr, 10);
+                } else if (ot == OperandType::LABEL) {
                     if (al.args.empty()) {
                         delete func;
                         outError = al.mnemonic + " requires a label operand";
@@ -626,7 +652,17 @@ bool assembleFromText(const std::string& text, std::vector<Function*>& outFuncs,
 
                 chunk.writeOpcode((Opcode)op, lineNum);
 
-                if (ot == OperandType::CONST_IDX) {
+                if (op == OP_CLOSURE) {
+                    long funcIdx = strtol(al.args[0].c_str(), nullptr, 10);
+                    long uvCount = strtol(al.args[1].c_str(), nullptr, 10);
+                    chunk.write((uint8_t)(funcIdx & 0xFF), lineNum);
+                    chunk.write((uint8_t)((funcIdx >> 8) & 0xFF), lineNum);
+                    chunk.write((uint8_t)uvCount, lineNum);
+                    for (int i = 2; i < (int)al.args.size(); i++) {
+                        long desc = strtol(al.args[i].c_str(), nullptr, 10);
+                        chunk.write((uint8_t)desc, lineNum);
+                    }
+                } else if (ot == OperandType::CONST_IDX) {
                     long idx = strtol(al.args[0].c_str(), nullptr, 10);
                     if (idx >= 256) {
                         chunk.write((uint8_t)(idx & 0xFF), lineNum);

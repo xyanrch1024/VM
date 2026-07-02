@@ -93,6 +93,14 @@ int disassembleInstruction(const Chunk& chunk, int offset) {
         case OP_LOOP:           return shortInstruction("OP_LOOP", offset, chunk);
         case OP_CALL:           return byteInstruction("OP_CALL", offset, chunk);
         case OP_RET:            return simpleInstruction("OP_RET", offset);
+        case OP_CLOSURE: {
+            uint16_t funcIdx = (uint16_t)(chunk.code[offset + 1]) | ((uint16_t)(chunk.code[offset + 2]) << 8);
+            uint8_t uvCount = chunk.code[offset + 3];
+            printf("  %-16s %4d (%d upvalues)\n", "OP_CLOSURE", funcIdx, uvCount);
+            return offset + 4 + uvCount;
+        }
+        case OP_GET_UPVALUE:    return byteInstruction("OP_GET_UPVALUE", offset, chunk);
+        case OP_SET_UPVALUE:    return byteInstruction("OP_SET_UPVALUE", offset, chunk);
         case OP_NEW_TUPLE:      return byteInstruction("OP_NEW_TUPLE", offset, chunk);
         case OP_NEW_TABLE:      return simpleInstruction("OP_NEW_TABLE", offset);
         case OP_TABLE_GET:      return simpleInstruction("OP_TABLE_GET", offset);

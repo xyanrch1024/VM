@@ -5,7 +5,7 @@
 #include <cmath>
 #include <cstdlib>
 
-VM::VM() { resetStack(); }
+VM::VM() { stack.reserve(65536); resetStack(); }
 VM::~VM() {
     // Free all GC-managed objects
     Obj* obj = gcHead;
@@ -44,7 +44,7 @@ std::string* VM::concatStrings(const std::string& a, const std::string& b) {
     return internString(a + b);
 }
 
-void VM::resetStack() { stack.clear(); frames.clear(); }
+void VM::resetStack() { stack.clear(); frames.clear(); openUpvalues = nullptr; }
 void VM::push(Value v) { stack.push_back(v); }
 
 Value VM::pop() {
@@ -63,6 +63,42 @@ void VM::dumpStack() const {
         printf(" ");
     }
     printf("\n");
+}
+
+// ============================================================
+// Upvalues
+// ============================================================
+
+ObjUpvalue* VM::captureUpvalue(Value* local) {
+    ObjUpvalue* prev = nullptr;
+    ObjUpvalue* uv = openUpvalues;
+    while (uv && uv->location > local) {
+        prev = uv;
+        uv = uv->nextOpen;
+    }
+    if (uv && uv->location == local)
+        return uv;
+    auto* obj = gcAlloc(sizeof(ObjUpvalue));
+    obj->type = ObjType::UPVALUE;
+    auto* created = static_cast<ObjUpvalue*>(obj);
+    created->location = local;
+    created->closedValue = Value::nil();
+    created->nextOpen = uv;
+    if (prev) {
+        prev->nextOpen = created;
+    } else {
+        openUpvalues = created;
+    }
+    return created;
+}
+
+void VM::closeUpvalues(Value* fp) {
+    while (openUpvalues && openUpvalues->location >= fp) {
+        ObjUpvalue* uv = openUpvalues;
+        uv->closedValue = *uv->location;
+        uv->location = nullptr;
+        openUpvalues = uv->nextOpen;
+    }
 }
 
 // ============================================================
@@ -98,6 +134,13 @@ void VM::markRoots() {
     for (auto& fn : functions)
         for (auto& c : fn->chunk.constants)
             markValue(c);
+
+    // Open upvalues
+    ObjUpvalue* uv = openUpvalues;
+    while (uv) {
+        uv->marked = true;
+        uv = uv->nextOpen;
+    }
 }
 
 void VM::markValue(Value& v) {
@@ -205,7 +248,7 @@ static Value makeNum(double d, ValueType t) {
 }
 
 VM::Result VM::interpret(Function* func) {
-    frames.clear();
+    resetStack();
     CallFrame cf;
     cf.function = func;
     cf.pc = 0;
@@ -355,12 +398,13 @@ VM::Result VM::interpret(Function* func) {
             // === Functions ===
             case OP_CALL: {
                 uint8_t argCount = readByte();
-                int funcIdx = (int)pop().integer;
-                if (funcIdx < 0 || funcIdx >= (int)functions.size()) {
-                    runtimeError("Invalid function index %d", funcIdx);
+                Value calleeVal = pop();
+                if (calleeVal.type != ValueType::OBJ || calleeVal.obj->type != ObjType::CLOSURE) {
+                    runtimeError("Call target is not a function");
                     return RUNTIME_ERROR;
                 }
-                Function* callee = functions[funcIdx].get();
+                auto* closure = static_cast<ObjClosure*>(calleeVal.obj);
+                Function* callee = closure->function;
                 if (callee->arity != (int)argCount) {
                     runtimeError("Function %s expects %d args, got %d",
                         callee->name.c_str(), callee->arity, argCount);
@@ -368,6 +412,7 @@ VM::Result VM::interpret(Function* func) {
                 }
                 CallFrame cf;
                 cf.function = callee;
+                cf.closure = closure;
                 cf.pc = 0;
                 cf.fp = (int)stack.size() - argCount;
                 frames.push_back(cf);
@@ -381,11 +426,67 @@ VM::Result VM::interpret(Function* func) {
             case OP_RET: {
                 Value result = pop();
                 int oldFp = frame()->fp;
+                closeUpvalues(&stack[oldFp]);
                 frames.pop_back();
                 if (frames.empty()) { push(result); return OK; }
                 // Restore stack to just past caller's locals
                 while ((int)stack.size() > oldFp) stack.pop_back();
                 push(result);
+                break;
+            }
+
+            case OP_CLOSURE: {
+                uint16_t funcIdx = readShort();
+                uint8_t uvCount = readByte();
+                if (funcIdx >= functions.size()) {
+                    runtimeError("Invalid function index in OP_CLOSURE");
+                    return RUNTIME_ERROR;
+                }
+                auto* obj = gcAlloc(sizeof(ObjClosure));
+                obj->type = ObjType::CLOSURE;
+                auto* closure = static_cast<ObjClosure*>(obj);
+                closure->function = functions[funcIdx].get();
+                closure->upvalueCount = uvCount;
+                closure->upvalues = (ObjUpvalue**)calloc(uvCount, sizeof(ObjUpvalue*));
+                for (int i = 0; i < uvCount; i++) {
+                    uint8_t desc = readByte();
+                    bool isLocal = (desc & 0x80) != 0;
+                    int index = desc & 0x7F;
+                    if (isLocal) {
+                        closure->upvalues[i] = captureUpvalue(&stack[frame()->fp + index]);
+                    } else {
+                        closure->upvalues[i] = frame()->closure->upvalues[index];
+                    }
+                }
+                push(Value::makeObj(closure));
+                break;
+            }
+
+            case OP_GET_UPVALUE: {
+                uint8_t index = readByte();
+                if (!frame()->closure || index >= (uint8_t)frame()->closure->upvalueCount) {
+                    runtimeError("Invalid upvalue index %d", index);
+                    return RUNTIME_ERROR;
+                }
+                ObjUpvalue* uv = frame()->closure->upvalues[index];
+                if (uv->location)
+                    push(*uv->location);
+                else
+                    push(uv->closedValue);
+                break;
+            }
+
+            case OP_SET_UPVALUE: {
+                uint8_t index = readByte();
+                if (!frame()->closure || index >= (uint8_t)frame()->closure->upvalueCount) {
+                    runtimeError("Invalid upvalue index %d", index);
+                    return RUNTIME_ERROR;
+                }
+                ObjUpvalue* uv = frame()->closure->upvalues[index];
+                if (uv->location)
+                    *uv->location = peek();
+                else
+                    uv->closedValue = peek();
                 break;
             }
 
