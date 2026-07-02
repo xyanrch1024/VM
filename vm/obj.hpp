@@ -10,7 +10,10 @@ enum class ObjType : uint8_t {
     TABLE,
     CLOSURE,
     UPVALUE,
+    NATIVE,
 };
+
+using NativeFn = Value(*)(int argCount, Value* args);
 
 struct Obj {
     ObjType type;
@@ -65,4 +68,10 @@ struct ObjUpvalue : Obj {
     ObjUpvalue* nextOpen = nullptr;
 
     ObjUpvalue() { type = ObjType::UPVALUE; }
+};
+
+struct ObjNative : Obj {
+    NativeFn function;
+    const char* name;
+    ObjNative() { type = ObjType::NATIVE; }
 };

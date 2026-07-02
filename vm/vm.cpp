@@ -170,6 +170,8 @@ void VM::markObj(Obj* obj) {
                 markObj(closure->upvalues[i]);
             break;
         }
+        case ObjType::NATIVE:
+            break;
         case ObjType::UPVALUE: {
             auto* upvalue = static_cast<ObjUpvalue*>(obj);
             if (upvalue->location == nullptr) // closed
@@ -211,6 +213,7 @@ void VM::freeObj(Obj* obj) {
             break;
         }
         case ObjType::UPVALUE:
+        case ObjType::NATIVE:
             break;
     }
     free(obj);
@@ -248,6 +251,25 @@ static Value makeNum(double d, ValueType t) {
     return t == ValueType::FLOAT ? Value::makeFloat(d) : Value::makeInt((int64_t)d);
 }
 
+static Value native_tonumber(int argc, Value* args) {
+    if (argc != 1) return Value::nil();
+    Value v = args[0];
+    switch (v.type) {
+        case ValueType::INT:   return v;
+        case ValueType::FLOAT: return v;
+        case ValueType::STRING: {
+            const auto& s = *static_cast<std::string*>(v.ptr);
+            char* end = nullptr;
+            double d = strtod(s.c_str(), &end);
+            if (end == s.c_str() || *end != '\0') return Value::nil();
+            return (d == (double)(int64_t)d)
+                ? Value::makeInt((int64_t)d) : Value::makeFloat(d);
+        }
+        default:
+            return Value::nil();
+    }
+}
+
 VM::Result VM::interpret(Function* func) {
     resetStack();
     CallFrame cf;
@@ -259,6 +281,16 @@ VM::Result VM::interpret(Function* func) {
     int localEnd = cf.fp + func->numLocals;
     while ((int)stack.size() < localEnd)
         stack.push_back(Value::nil());
+
+    // Populate native function slots
+    if (func->numLocals > 1) {
+        auto* nobj = gcAlloc(sizeof(ObjNative));
+        nobj->type = ObjType::NATIVE;
+        auto* native = static_cast<ObjNative*>(nobj);
+        native->function = native_tonumber;
+        native->name = "tonumber";
+        stack[cf.fp + 1] = Value::makeObj(native);
+    }
 
     for (;;) {
 #ifdef DEBUG_TRACE
@@ -400,7 +432,19 @@ VM::Result VM::interpret(Function* func) {
             case OP_CALL: {
                 uint8_t argCount = readByte();
                 Value calleeVal = pop();
-                if (calleeVal.type != ValueType::OBJ || calleeVal.obj->type != ObjType::CLOSURE) {
+                if (calleeVal.type != ValueType::OBJ) {
+                    runtimeError("Call target is not a function");
+                    return RUNTIME_ERROR;
+                }
+                if (calleeVal.obj->type == ObjType::NATIVE) {
+                    auto* native = static_cast<ObjNative*>(calleeVal.obj);
+                    int firstArg = (int)stack.size() - argCount;
+                    Value result = native->function(argCount, &stack[firstArg]);
+                    stack.resize(firstArg);
+                    push(result);
+                    break;
+                }
+                if (calleeVal.obj->type != ObjType::CLOSURE) {
                     runtimeError("Call target is not a function");
                     return RUNTIME_ERROR;
                 }

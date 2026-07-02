@@ -531,8 +531,9 @@ Function* Compiler::compile(const std::vector<Stmt*>& stmts, const char* name) {
     state->numLocals = 0;
     current = state;
 
-    // Register "print" as a built-in local (slot 0)
-    addLocal("print");
+    // Register built-in locals
+    addLocal("print");     // slot 0
+    addLocal("tonumber");  // slot 1
 
     for (auto s : stmts) {
         compileStmt(s);
