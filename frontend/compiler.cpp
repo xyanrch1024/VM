@@ -123,7 +123,6 @@ void Compiler::pushScope() { curr().scopeDepth++; }
 void Compiler::popScope() {
     curr().scopeDepth--;
     while (!curr().locals.empty() && curr().locals.back().depth > curr().scopeDepth) {
-        emitOpcode(0, OP_POP);
         curr().locals.pop_back();
     }
 }
