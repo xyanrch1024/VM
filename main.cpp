@@ -6,6 +6,7 @@
 #include "compiler.hpp"
 #include <cstring>
 #include <cstdio>
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -420,23 +421,90 @@ static void testFibonacci() {
 }
 
 // ============================================================
+// REPL input helpers
+// ============================================================
+
+// Check if source text has balanced brackets and keywords.
+// Returns true if the input looks syntactically complete.
+static bool isCompleteInput(const std::string& src) {
+    int parenDepth = 0, bracketDepth = 0, braceDepth = 0;
+    size_t i = 0;
+    while (i < src.size()) {
+        // Skip string literals
+        if (src[i] == '"') {
+            i++;
+            while (i < src.size() && src[i] != '"') {
+                if (src[i] == '\\') i++;
+                i++;
+            }
+            if (i < src.size()) i++; // skip closing quote
+            continue;
+        }
+        // Skip line comments
+        if (i + 1 < src.size() && src[i] == '-' && src[i+1] == '-') {
+            i += 2;
+            while (i < src.size() && src[i] != '\n') i++;
+            continue;
+        }
+        switch (src[i]) {
+            case '(': parenDepth++; break;
+            case ')': parenDepth--; break;
+            case '[': bracketDepth++; break;
+            case ']': bracketDepth--; break;
+            case '{': braceDepth++; break;
+            case '}': braceDepth--; break;
+        }
+        i++;
+    }
+    // Check keyword balance: simple scan for unmatched 'end'/'until'
+    // Count 'function', 'if ', 'while ', 'for ', 'repeat', 'do'
+    // vs 'end', 'until'
+    // We search for keyword-like patterns
+    int blockDepth = 0;
+    std::string lower;
+    for (char c : src) lower += (char)std::tolower((unsigned char)c);
+
+    size_t pos = 0;
+    while ((pos = lower.find_first_of("abcdefghijklmnopqrstuvwxyz", pos)) != std::string::npos) {
+        size_t end = pos;
+        while (end < lower.size() && std::isalpha((unsigned char)lower[end])) end++;
+        std::string word = lower.substr(pos, end - pos);
+        // Skip if part of a larger identifier (not standalone keyword)
+        // Only match if preceded by whitespace/start and followed by non-alpha
+        bool standalone = (pos == 0 || !std::isalpha((unsigned char)lower[pos-1]))
+                       && (end == lower.size() || !std::isalpha((unsigned char)lower[end]));
+        if (standalone) {
+            if (word == "function" || word == "if" || word == "while"
+                || word == "for" || word == "repeat" || word == "do")
+                blockDepth++;
+            else if (word == "end" || word == "until")
+                blockDepth--;
+        }
+        pos = end;
+    }
+
+    return parenDepth <= 0 && bracketDepth <= 0 && braceDepth <= 0 && blockDepth <= 0;
+}
+
+// ============================================================
 // Compile and execute a kai source string
 // ============================================================
-static void runSource(const std::string& source, VM& vm) {
+static bool runSource(const std::string& source, VM& vm) {
     Parser parser(source);
     std::vector<Stmt*> stmts = parser.parse();
-    if (stmts.empty()) return;
+    if (stmts.empty()) return false;
 
     Compiler compiler(vm);
     Function* func = compiler.compile(stmts, "main");
-    if (compiler.hadError()) return;
+    if (compiler.hadError()) return false;
 
     if (getenv("VM_DEBUG")) {
         printf("=== Bytecode ===\n");
         disassembleChunk(func->chunk, "main");
     }
 
-    vm.interpret(func);
+    VM::Result r = vm.interpret(func);
+    return r == VM::OK;
 }
 
 static std::string readFile(const char* path) {
@@ -661,19 +729,84 @@ int main(int argc, char** argv) {
         return 0;
     }
 
-    // Default: REPL
+    // Default: REPL (with multi-line input, expression auto-print, state persistence)
     if (argc == 1) {
         printf("kai REPL (type 'exit' to quit)\n");
         VM vm;
-        std::string line;
+        std::string accumulated;
+        std::string buffer;
+        bool inMultiLine = false;
         for (;;) {
-            printf("> ");
+            printf("%s ", inMultiLine ? ">>" : "> ");
             fflush(stdout);
-            if (!std::getline(std::cin, line)) break;
-            if (line == "exit" || line == "quit") break;
-            if (!line.empty()) {
-                runSource(line, vm);
+            std::string line;
+            if (!std::getline(std::cin, line)) {
+                if (inMultiLine && !buffer.empty()) {
+                    // EOF during multi-line input — run what we have
+                    line.clear();
+                } else {
+                    break;
+                }
             }
+            if (!inMultiLine && (line == "exit" || line == "quit")) break;
+
+            if (!buffer.empty()) buffer += "\n";
+            buffer += line;
+
+            // If buffer is empty, skip
+            if (buffer.empty() || buffer.find_first_not_of(" \t\n\r") == std::string::npos) {
+                buffer.clear();
+                continue;
+            }
+
+            // Check if input is complete (balanced brackets/keywords)
+            bool complete = isCompleteInput(buffer);
+
+            if (complete) {
+                // Determine if input is a standalone expression (needs print() wrapping)
+                // or a valid statement. Use quiet parsing to test without showing errors.
+                std::string toRun;
+
+                // Try parsing as-is (statements like local, if, while, print(...), x=1)
+                {
+                    Parser test(buffer);
+                    auto stmts = test.parseQuiet();
+                    if (!stmts.empty() && !test.hasError()) {
+                        toRun = buffer;    // valid statement(s)
+                    }
+                }
+
+                // If that failed, try wrapping as print(...) for bare expressions like 1+2
+                if (toRun.empty()) {
+                    std::string wrapped = "print(" + buffer + ")";
+                    Parser pw(wrapped);
+                    auto ws = pw.parseQuiet();
+                    if (!ws.empty() && !pw.hasError()) {
+                        toRun = wrapped;  // bare expression → auto-print
+                    }
+                }
+
+                // If still nothing, the input truly has an error — run it anyway
+                // so the user sees the error once from the real compilation
+                if (toRun.empty()) {
+                    toRun = buffer;
+                }
+
+                // Accumulate for state persistence (recompile all each time)
+                if (!accumulated.empty()) accumulated += "\n";
+                accumulated += toRun;
+                runSource(accumulated, vm);
+
+                buffer.clear();
+                inMultiLine = false;
+            } else {
+                // Incomplete input — prompt for more
+                inMultiLine = true;
+            }
+        }
+        if (inMultiLine && !buffer.empty()) {
+            // EOF during multi-line; try running what we have
+            runSource(buffer, vm);
         }
         return 0;
     }

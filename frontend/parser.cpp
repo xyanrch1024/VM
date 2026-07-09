@@ -81,6 +81,21 @@ std::vector<Stmt*> Parser::parse() {
     }
 }
 
+std::vector<Stmt*> Parser::parseQuiet() {
+    // Suppress error output by redirecting stderr
+    FILE* oldStderr = stderr;
+    FILE* devnull = fopen("/dev/null", "w");
+    if (devnull) stderr = devnull;
+
+    auto result = parse();
+
+    if (devnull) {
+        stderr = oldStderr;
+        fclose(devnull);
+    }
+    return result;
+}
+
 // ---- Grammar ----
 
 std::vector<Stmt*> Parser::program() {

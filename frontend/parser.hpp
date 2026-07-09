@@ -9,6 +9,8 @@ class Parser {
 public:
     Parser(const std::string& source);
     std::vector<Stmt*> parse();
+    std::vector<Stmt*> parseQuiet();  // parse without printing errors
+    bool hasError() const { return hadError; }
 
 private:
     Lexer lexer;
